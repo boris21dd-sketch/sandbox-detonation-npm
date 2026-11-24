@@ -1,49 +1,48 @@
-# RÉSULTAT — banc de détonation npm, 2026-11-24
+# RÉSULTAT — banc de détonation npm (protocole v3)
 
 ## Chiffre citable
 
-**23 / 24 sondes détectées, témoin `p12-propre` muet, trois fois de suite.**
+**23 / 24 sondes détectées, témoin `p12-propre` muet, trois runs consécutifs avec le
+harnais v3.**
 
-| run | CLÉ | — | verdict | code |
-|---|---|---|---|---|
-| b | 23 | 1 | BANC RECEVABLE | 0 |
-| f | 23 | 1 | BANC RECEVABLE | 0 |
-| g | 23 | 1 | BANC RECEVABLE | 0 |
+| run | CLÉ | — | verdict | pilote | observation |
+|---|---|---|---|---|---|
+| h | 23 | 1 | BANC RECEVABLE | 24/24 | 13,4 s |
+| i | 23 | 1 | BANC RECEVABLE | 24/24 | 16,0 s |
+| j | 23 | 1 | BANC RECEVABLE | 24/24 | 13,4 s |
 
-Dénominateur = registre (24 sonde inscrites), 0 hors registre.
-Configuration : horloge +30 jours (`SBX_OFFSET_JOURS=30`), paquet installé la veille,
-redémarrage du conteneur entre chaque sonde.
+Dénominateur = registre (24 sondes), 0 hors registre. Horloge +30 jours, paquet installé
+la veille, redémarrage du conteneur entre chaque sonde.
 
-## Ce qui rend ce chiffre croyable
+## Pourquoi ces runs remplacent ceux de la veille
 
-Trois refus correctement motivés, mesurés sur le vrai banc :
+Les runs `b`, `f`, `g` (même compte) sont **caducs** : `_sbx_etat.jsonl` y montre les étapes
+`demarrage, horloge_decalee, cycle_vie_deps, cycle_vie_fini, main, entree_module, fin` —
+**aucune étape `pilote`**. Le plafond de `setTimeout` posé par le pilote raccourcissait
+aussi la fenêtre d'observation de `run-entry.js` (1,6 s au lieu de 8 s), donc `piloter()`
+n'était jamais appelé et toute charge déclenchée à l'usage — session WhatsApp, exports —
+passait inaperçue.
 
-1. **T-H1 — injection de faute.** Les événements de `b001` copiés dans `b012`
-   (sonde inscrite) donnent `ATTRIBUTION INVALIDE raisons=nonce étranger`, et le banc
-   entier bascule en `BANC NON RECEVABLE`. Un artefact présent n'est pas cru sur parole.
-2. **T-H3 — protection retirée.** Avec `SBX_REDEMARRER=0`, l'orphelin du leurre survit et
-   frappe dans le témoin : `p12-propre ATTRIBUTION INVALIDE — FORGE DÉMONTRÉE
-   (leurre.exfil-probe.test vu dans p12-propre)`. `p21` devient `CLÉ NON RECEVABLE`.
-3. **T-H4 — concurrence.** Deux bancs simultanés : le second sort `rc=75` en 7 ms.
+Avec v3 : `pilote` présent dans **24 sondes sur 24**, fenêtre mesurée **13 à 16 s**, et le
+compte ne bouge pas. Le banc observe désormais ce qu'il annonce observer.
 
-Plus **T-H5** : un seul nonce par journal, identique à la colonne 3 du registre
-(vérifié sur `b001`, `b023`, `b024`).
+## Les refus qui rendent le chiffre croyable (mesurés sur le vrai banc)
 
-## Ce qui n'est PAS prouvé
+- **Injection de faute** : événements de `b001` copiés dans `b012` (sonde inscrite) →
+  `ATTRIBUTION INVALIDE raisons=nonce étranger`, banc `NON RECEVABLE`.
+  Un tag **non inscrit** ne prouve rien : il sort `HORS REGISTRE (ignoré)`.
+- **Protection retirée** : `SBX_REDEMARRER=0` → l'orphelin du leurre frappe dans le témoin,
+  `p12-propre ATTRIBUTION INVALIDE — FORGE DÉMONTRÉE`, `p21` en `CLÉ NON RECEVABLE`.
+- **Concurrence** : deux bancs simultanés, le second `rc=75` en 7 ms.
+- **Nonce** : une seule valeur par journal, identique à la colonne 3 du registre.
 
-- **`sh -c` avec environnement vidé** : l'enfant n'est plus instrumenté. Il ne peut pas
-  forger un `CLÉ` (pas de nonce), mais ce qu'il fait échappe au journal. Deux
-  vérificateurs indépendants ont confirmé que ni un hôte Rust ni un hôte Go ne
-  changent cela : seul un filtre `seccomp SECCOMP_RET_USER_NOTIF` (hérité par
-  `fork`/`exec`) le fermerait. `LD_PRELOAD` est inopérant ici.
-- **P1 ouverts** : plafond des minuteries absent des processus enfants, `SBX_OBSERVER_MS`
-  qui coupe le pilote, `sudoers` donnant root à bob.
-- **RCE npm** : le correctif est en place (`.npmrc` retiré, configs vides distinctes,
-  `--git=/bin/false`), mais la contre-épreuve ne reproduit pas la faille avec
-  npm 12.0.2 / node 22.23.2 — le test ne discrimine donc pas ici.
+## Ce qui n'est pas prouvé
 
-## Chiffres morts
-
-17 / 20, 13 / 20, 12 / 20 et le `CLÉ` du run `v2001` : **non recevables**. Ils venaient
-d'un lecteur incapable de distinguer « rien produit » de « rien trouvé », et capables de
-lire le dossier d'un run périmé comme une détection.
+- **Enfant `sh -c` à environnement vidé** : non instrumenté. Pas de nonce ⇒ pas de `CLÉ`
+  forgeable, mais son activité échappe au journal. `strace -f` le suit déjà ; lire
+  `trace.raw` donne une confirmation, pas une preuve (le paquet peut modifier ce fichier).
+  Ni Rust ni Go ne changent cela ; seul `seccomp` + `SECCOMP_RET_USER_NOTIF` le fermerait.
+- **RCE npm** : correctif en place, contre-épreuve non reproduite sur npm 12.0.2 →
+  test **INCONCLUANT**, aucune version de npm n'est figée pour le faire passer.
+- **P5/P6/P7** : binaires absents de l'image, identité du tarball, score pondéré.
+- **sudoers** : bob a de fait les droits root tant qu'il est dans le groupe `docker`.

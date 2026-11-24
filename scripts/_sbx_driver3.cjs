@@ -24,7 +24,14 @@ const C = (n) => 'CANARI_' + n + '_' + SUF;
 // Horloge REELLE du harnais, capturee avant tout decalage : sans elle, decaler
 // l'horloge du paquet epuise notre propre budget et le vrai code n'est jamais
 // charge (mesure : reste_ms=0 des les premieres millisecondes).
-const VRAI_NOW_MS = Date.now.bind(Date);
+// Si le harnais (lib/sbx/temps.js) a deja plafonne les minuteurs / decale l'horloge,
+// le pilote NE LES REAPPLIQUE PAS (sinon double decalage +60 j) et prend les vraies
+// references exposees par le harnais. Sinon (harnais ancien) : repli, comportement d'origine.
+const TH = (globalThis.__sbx_temps && typeof globalThis.__sbx_temps === 'object') ? globalThis.__sbx_temps : null;
+const HARNAIS_PLAFOND = !!(TH && Number(TH.plafond) > 0);
+const HARNAIS_HORLOGE = !!(TH && Number(TH.offsetMs) !== 0 && isFinite(Number(TH.offsetMs)));
+const HARNAIS_ACTIF = HARNAIS_PLAFOND || HARNAIS_HORLOGE;
+const VRAI_NOW_MS = (HARNAIS_ACTIF && typeof TH.vraiNow === 'function') ? TH.vraiNow : Date.now.bind(Date);
 const T0 = VRAI_NOW_MS();
 const BUDGET = 75000;
 // Trace de progression : sans elle, « main non chargé » et « jamais atteint » sont
@@ -34,8 +41,8 @@ const trace = (etape, extra) => {
   // cible /work/out/_sbx_etat.jsonl n'etait JAMAIS copiee (trace perdue a chaque run,
   // releve par Claude sur detoner-obs.sh:134). Le lecteur la lit dans runs-obs/<tag>/run/.
   const cibles = ['/work/out/run/_sbx_etat.jsonl', require('path').join(__dirname, '_sbx_etat.jsonl')];
-  try { console.error('[trace] ' + etape + ' ' + JSON.stringify({ t: Date.now() - T0, ...extra, nonce: NONCE })); } catch (e) {}
-  for (const c of cibles) { try { fs.appendFileSync(c, JSON.stringify({ etape, t: Date.now() - T0, ...extra, nonce: NONCE }) + '\n'); break; } catch (e) {} }
+  try { console.error('[trace] ' + etape + ' ' + JSON.stringify({ t: VRAI_NOW_MS() - T0, ...extra, nonce: NONCE })); } catch (e) {}
+  for (const c of cibles) { try { fs.appendFileSync(c, JSON.stringify({ etape, t: VRAI_NOW_MS() - T0, ...extra, nonce: NONCE }) + '\n'); break; } catch (e) {} }
 };
 trace('demarrage', { pkg: pkg.name, type: pkg.type || 'commonjs' });
 // FIN sur l'evenement 'exit' : run-entry.js tue le pilote par process.exit() au bout de
@@ -64,7 +71,7 @@ mk(path.join(H, '.bash_history'), 'ssh root@' + C('HIST') + '\n');
 // des globales (relevé en audit, puis vérifié : un setInterval de 3 jours passait).
 const Module = require('module');
 const _load = Module._load;
-Module._load = function (demande, ...reste) {
+if (!HARNAIS_PLAFOND) Module._load = function (demande, ...reste) {
   const m = _load.apply(this, [demande, ...reste]);
   if (demande === 'timers' || demande === 'node:timers') {
     for (const f of ['setTimeout', 'setInterval']) {
@@ -98,7 +105,9 @@ try {
   if (o.jours) OFFSET = Number(o.jours) * 86400000;
   if (o.installe_ms) process.env.SBX_INSTALLE_MS = String(o.installe_ms);
 } catch (e) {}
-if (OFFSET) {
+if (HARNAIS_HORLOGE) {
+  trace('horloge_decalee', { jours: Number(TH.offsetMs) / 86400000, source: 'harnais' });
+} else if (OFFSET) {
   const VRAI_NOW = Date.now.bind(Date);
   const VraieDate = Date;
   Date.now = () => VRAI_NOW() + OFFSET;
@@ -106,13 +115,16 @@ if (OFFSET) {
     constructor(...a) { if (a.length === 0) { super(VRAI_NOW() + OFFSET); } else { super(...a); } }
     static now() { return VRAI_NOW() + OFFSET; }
   };
-  trace('horloge_decalee', { jours: OFFSET / 86400000 });
+  trace('horloge_decalee', { jours: OFFSET / 86400000, source: 'pilote' });
 }
 
-const vraiST = global.setTimeout, vraiSI = global.setInterval;
-const plafond = (ms) => (typeof ms === 'number' && ms > 1500 ? 1500 : ms);
-global.setTimeout = function (f, ms, ...a) { return vraiST(f, plafond(ms), ...a); };
-global.setInterval = function (f, ms, ...a) { return vraiSI(f, plafond(ms), ...a); };
+const vraiST = (HARNAIS_ACTIF && typeof TH.vraiSetTimeout === 'function') ? TH.vraiSetTimeout : global.setTimeout;
+const vraiSI = (HARNAIS_ACTIF && typeof TH.vraiSetInterval === 'function') ? TH.vraiSetInterval : global.setInterval;
+if (!HARNAIS_PLAFOND) {
+  const plafond = (ms) => (typeof ms === 'number' && ms > 1500 ? 1500 : ms);
+  global.setTimeout = function (f, ms, ...a) { return vraiST(f, plafond(ms), ...a); };
+  global.setInterval = function (f, ms, ...a) { return vraiSI(f, plafond(ms), ...a); };
+}
 
 // 1. scripts de cycle de vie — 8 s chacun, jamais au-dela du budget
 for (const k of ['preinstall', 'install', 'postinstall', 'prepare']) {

@@ -349,6 +349,19 @@ avertissement en tête, problèmes numérotés avec le test qui tranche, correct
 échouées documentées comme échouées, passes de vérificateurs verbatim.
 Recette complète et arborescence : `references/passation.md`.
 
+**Le paquet de preuve se construit depuis le chemin DÉPLOYÉ**, jamais depuis un miroir
+ou une copie de travail : une annexe prise dans le miroir a montré un harnais d'avant le
+correctif, et le relecteur a eu raison de refuser le chiffre — le code qu'il lisait
+n'était pas celui qui avait tourné. Joindre : `sha256sum` de l'arbre déployé, la même
+liste pour la version qui a réellement produit les runs cités, les registres bruts, la
+sortie brute du lecteur et l'archive des dossiers de run. Dire **quelle version a
+tourné quoi** ; sans cela le relecteur ne peut pas recompter et tout le dossier tombe.
+
+Un test de sécurité qui ne discrimine plus (contre-épreuve impossible à reproduire sur
+la version d'outil installée) s'écrit `INCONCLUANT`, **jamais `OK`** — et on ne fige
+jamais une vieille version de l'outil pour le faire passer : c'est rouvrir la faille
+pour sauver le test.
+
 ## Ce qu'un « rien » veut dire
 
 Aucun canari sorti, aucun hôte hors registry, aucun `exec` inattendu, sous
@@ -356,7 +369,21 @@ scripts de cycle de vie + bins + exports pilotés + délais écrasés : c'est un
 **absence étayée**, pas une innocence. La formuler ainsi, jamais « le paquet
 est propre ».
 
-## Dépôt dédié
+## Un banc ne vaut que par ses refus
+
+Trois refus motivés valent mieux que vingt détections. Les mesurer avant de citer un chiffre :
+
+- **Injection de faute** : copier les événements d'une sonde A dans le dossier d'une sonde B **inscrite au registre** → le lecteur doit répondre `ATTRIBUTION INVALIDE` et le banc `NON RECEVABLE`. Copier dans un tag non inscrit ne prouve rien : il sort `HORS REGISTRE (ignoré)`.
+- **Protection retirée** : relancer sans redémarrage du conteneur ; l'orphelin du leurre doit frapper dans le témoin et sortir `ATTRIBUTION INVALIDE — FORGE DÉMONTRÉE`. S'il sort `—`, le test est non concluant, le consigner sans conclure.
+- **Concurrence** : deux bancs en parallèle, le second doit sortir `rc=75` immédiatement.
+
+## Le témoin muet est le critère, pas le témoin détecté
+
+Des vérificateurs LLM (Mistral, hy4) ont exigé « `p12-propre` = CLÉ » comme critère de passage. **Ce critère valide un banc contaminé.** Le témoin doit sortir `—`. Un dossier de run périmé, ou les canaris d'une sonde précédente, produisent un `CLÉ` parfaitement crédible : l'exiger revient à exiger la contamination.
+
+## Mesure honnête
+
+Seul `BANC RECEVABLE` (code 0) se cite. Tout autre verdict : lire la colonne des raisons, ne pas transformer en chiffre.
 
 Le protocole complet, les scripts réels et le journal d'audit vivent sur
 `github.com/boris21dd-sketch/sandbox-detonation-npm`. Toute amélioration y est
@@ -386,6 +413,34 @@ détachées (`spawn detached`, `unref`) qui rendent la main tout de suite.
 
 Preuve exigée : sonde `p16-main-module` qui ne frappe QUE sous `require.main`
 — muette avant la passe, CLÉ après. Un banc sans cette sonde ne prouve rien.
+
+## Le plafond des délais ne doit pas couper la fenêtre du harnais
+
+Plafonner `setTimeout` pour faire partir une charge de trois jours est juste, mais le
+même plafond s'applique au harnais : la fenêtre de settle du module d'entrée est tombée
+de 8 s à 1,6 s, et l'étape qui pilote les exports (`piloter()`) n'était **plus jamais
+appelée**. Mesure : le `_sbx_etat.jsonl` du run ne contenait aucune étape `pilote`.
+Toute charge déclenchée à l'usage (session WhatsApp, handler d'événement) passait
+inaperçue, alors que le banc affichait des `CLÉ` — obtenus par un **autre** canal (le
+`postinstall`), ce qui rendait le score crédible et faux.
+
+Règles :
+
+- plafond et horloge se posent dans **chaque** processus instrumenté, pas seulement
+  dans la cible : précharger `lib/sbx/temps.js`, avec `syncBuiltinESMExports` pour
+  couvrir `node:timers`, `timers/promises`, un délai passé en texte et les
+  petits-enfants node ;
+- le plafond ne s'applique qu'au code du paquet, jamais à la fenêtre d'observation
+  du harnais ;
+- **prouver que le harnais est allé au bout** : lire son propre journal d'étapes et
+  exiger la séquence complète (`demarrage → … → main → entree_module → pilote →
+  fin`). Une étape manquante invalide le run entier, même si toutes les sondes sont
+  `CLÉ` et que le lecteur dit `BANC RECEVABLE`.
+
+Corollaire : **dire par quel canal un `CLÉ` a été obtenu**. Lire les événements pour
+trouver le canal porteur (`fs.writeFileSync` vs `http.corps`) ; un canari sorti par
+écriture de fichier ne prouve pas que le réseau est vu, et un `CLÉ` obtenu par un canal
+inattendu ne valide pas la sonde qu'on croyait testée.
 
 ## Horloge accélérée (mois/années)
 
