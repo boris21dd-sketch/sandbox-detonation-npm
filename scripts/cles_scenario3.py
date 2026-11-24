@@ -125,11 +125,46 @@ def est_registry(host) -> str:
     return bool(h) and (h == "registry.npmjs.org" or h.endswith(".registry.npmjs.org"))
 
 
+SUF = "7f3ac9"
+CANARIS_CONNUS = [f"CANARI_{n}_{SUF}" for n in
+                  ("NPM", "SSH", "AWS", "GH", "DOCKER", "KUBE", "GIT", "HIST",
+                   "WA", "GCLOUD", "COOKIE")]
+
+
+def variantes(c: str):
+    """Formes sous lesquelles un canari peut sortir encode.
+
+    Un attaquant qui serialise l'environnement complet en JSON puis en base64
+    n'envoie JAMAIS la chaine nue : la recherche en sous-chaine directe le
+    manque. On cherche donc aussi base64 (std et urlsafe, avec et sans padding),
+    hex et percent. (Idee reprise de Malwhunter wiretap/canary.py:27-51.)
+    """
+    import base64, urllib.parse
+    b = c.encode()
+    formes = {c}
+    for enc in (base64.b64encode(b).decode(),
+                base64.b64encode(b).decode().rstrip("="),
+                base64.urlsafe_b64encode(b).decode(),
+                base64.urlsafe_b64encode(b).decode().rstrip("="),
+                b.hex(), urllib.parse.quote(c, safe="")):
+        formes.add(enc)
+    return formes
+
+
 def canaris(blob: str):
     import re
     # `CANARI_FACTICE_…` est le jeton que le harnais pose lui-même dans ~/.npmrc :
     # le compter comme fuite rendrait chaque paquet « coupable ».
-    return {c for c in re.findall(r"CANARI_[A-Z]+_[0-9a-f]{6}", blob) if "FACTICE" not in c}
+    trouves = {c for c in re.findall(r"CANARI_[A-Z]+_[0-9a-f]{6}", blob) if "FACTICE" not in c}
+    # Passe complementaire : si le blob ne contient aucun canari en clair, on
+    # tente les formes encodees des canaris connus (le semeur les a poses).
+    if not trouves:
+        for connu in CANARIS_CONNUS:
+            for f in variantes(connu):
+                if f and f in blob:
+                    trouves.add(connu)
+                    break
+    return trouves
 
 
 def main():
