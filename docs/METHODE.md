@@ -67,3 +67,5 @@ fichier jamais écrit.
 `scripts/veille-audit-sandbox.sh` : relance l'audit s'il est arrêté ou figé
 (journal inchangé plus de 25 minutes), sans jamais relancer si un banc tourne
 encore. Silencieuse quand tout va bien.
+
+<!-- etat : 13/13, temoin muet -->
