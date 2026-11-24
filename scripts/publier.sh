@@ -23,5 +23,14 @@ git add -A
 git commit -q -m "$TITRE
 
 $MESURE"
-git push -q origin HEAD 2>&1 | tail -2 || true
+
+# Le jeton n'est jamais stocké dans CE dépôt : on l'emprunte au remote de
+# travail au moment du push, et l'URL publique reste propre.
+AUTH=$(git -C /home/bob/q5n2/rust-main remote get-url origin 2>/dev/null \
+       | sed -E 's#(https://[^/@]+)@github\.com/.*#\1@github.com#')
+if [ -n "${AUTH:-}" ] && [ "$AUTH" != "$(git -C /home/bob/q5n2/rust-main remote get-url origin)" ]; then
+  git push -q "$AUTH/boris21dd-sketch/sandbox-detonation-npm.git" HEAD 2>&1 | tail -2 || true
+else
+  git push -q origin HEAD 2>&1 | tail -2 || true
+fi
 echo "publié : $(git log --oneline -1)"
