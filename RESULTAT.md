@@ -1,48 +1,52 @@
-# RÉSULTAT — banc de détonation npm (protocole v3)
+# RÉSULTAT — banc de détonation npm, protocole v4 (25 sondes)
 
 ## Chiffre citable
 
-**23 / 24 sondes détectées, témoin `p12-propre` muet, trois runs consécutifs avec le
-harnais v3.**
+**24 / 25 sondes détectées, témoin `p12-propre` muet, trois runs consécutifs (k, l, m).**
+`BANC RECEVABLE`, code 0, sur les trois.
 
-| run | CLÉ | — | verdict | pilote | observation |
-|---|---|---|---|---|---|
-| h | 23 | 1 | BANC RECEVABLE | 24/24 | 13,4 s |
-| i | 23 | 1 | BANC RECEVABLE | 24/24 | 16,0 s |
-| j | 23 | 1 | BANC RECEVABLE | 24/24 | 13,4 s |
+| run | CLÉ | — | verdict | pilote | settle | observation (min/méd/max) |
+|---|---|---|---|---|---|---|
+| k | 24 | 1 | BANC RECEVABLE | 25/25 | 25/25 | 13,1 / 14,2 / 18,6 s |
+| l | 24 | 1 | BANC RECEVABLE | 25/25 | 25/25 | 13,4 / 15,6 / 16,9 s |
+| m | 24 | 1 | BANC RECEVABLE | 25/25 | 25/25 | 12,7 / 15,7 / 18,2 s |
 
-Dénominateur = registre (24 sondes), 0 hors registre. Horloge +30 jours, paquet installé
-la veille, redémarrage du conteneur entre chaque sonde.
+Registre = 25 sondes, 0 hors registre, 25 journaux distincts par run.
 
-## Pourquoi ces runs remplacent ceux de la veille
+## `verif_preuves.py` — contrôles hors lecteur, passés sur les trois lots
 
-Les runs `b`, `f`, `g` (même compte) sont **caducs** : `_sbx_etat.jsonl` y montre les étapes
-`demarrage, horloge_decalee, cycle_vie_deps, cycle_vie_fini, main, entree_module, fin` —
-**aucune étape `pilote`**. Le plafond de `setTimeout` posé par le pilote raccourcissait
-aussi la fenêtre d'observation de `run-entry.js` (1,6 s au lieu de 8 s), donc `piloter()`
-n'était jamais appelé et toute charge déclenchée à l'usage — session WhatsApp, exports —
-passait inaperçue.
+- toutes les lignes de `events.jsonl` portent le nonce du registre ;
+- `fin.json`, `entrees.jsonl`, `summary.json` au bon nonce, aucun événement étranger ;
+- garde `OK`, redémarrage `OK`, `npm_rc = 0` partout ;
+- aucun canari d'un autre suffixe, aucun `leurre.exfil-probe.test` hors `p21` ;
+- `p18`, `p18b`, `p18c` : le canari n'apparaît **jamais en clair** dans le faux-Internet —
+  ces trois-là ne sont détectées que par le matcher, sur de vraies données ;
+- étapes `settle` + `pilote` présentes dans 25/25 `_sbx_etat.jsonl`.
 
-Avec v3 : `pilote` présent dans **24 sondes sur 24**, fenêtre mesurée **13 à 16 s**, et le
-compte ne bouge pas. Le banc observe désormais ce qu'il annonce observer.
+## Ce que la v4 a ajouté, et ce que ça prouve
 
-## Les refus qui rendent le chiffre croyable (mesurés sur le vrai banc)
+`p23` est la première sonde dont la charge ne part **que si le pilote appelle une fonction
+exportée**. Testée hors banc : frappe avec le nouveau `run-entry.js` (15,1 s, 1 requête),
+muette avec l'ancien (1,6 s, 0 requête).
 
-- **Injection de faute** : événements de `b001` copiés dans `b012` (sonde inscrite) →
-  `ATTRIBUTION INVALIDE raisons=nonce étranger`, banc `NON RECEVABLE`.
-  Un tag **non inscrit** ne prouve rien : il sort `HORS REGISTRE (ignoré)`.
-- **Protection retirée** : `SBX_REDEMARRER=0` → l'orphelin du leurre frappe dans le témoin,
-  `p12-propre ATTRIBUTION INVALIDE — FORGE DÉMONTRÉE`, `p21` en `CLÉ NON RECEVABLE`.
-- **Concurrence** : deux bancs simultanés, le second `rc=75` en 7 ms.
-- **Nonce** : une seule valeur par journal, identique à la colonne 3 du registre.
+C'est pour elle que le compte passe de 23 à 24. Les runs précédents (`b` à `j`) ne
+contenaient aucune sonde dépendant du pilote : le banc ne pouvait donc pas voir que le
+pilote était cassé. Ils n'étaient pas faux, ils étaient **muets sur la question**.
 
-## Ce qui n'est pas prouvé
+## Correction d'un récit erroné (le mien)
 
-- **Enfant `sh -c` à environnement vidé** : non instrumenté. Pas de nonce ⇒ pas de `CLÉ`
-  forgeable, mais son activité échappe au journal. `strace -f` le suit déjà ; lire
-  `trace.raw` donne une confirmation, pas une preuve (le paquet peut modifier ce fichier).
-  Ni Rust ni Go ne changent cela ; seul `seccomp` + `SECCOMP_RET_USER_NOTIF` le fermerait.
-- **RCE npm** : correctif en place, contre-épreuve non reproduite sur npm 12.0.2 →
-  test **INCONCLUANT**, aucune version de npm n'est figée pour le faire passer.
-- **P5/P6/P7** : binaires absents de l'image, identité du tarball, score pondéré.
-- **sudoers** : bob a de fait les droits root tant qu'il est dans le groupe `docker`.
+- `p11-wa` **ne dépend pas du pilote** : elle frappe au chargement, identiquement en
+  `b011` et `h011`. Le `fs.writeFileSync` que j'avais cité est l'**ensemencement des
+  canaris par le pilote**, et `p11` n'a pas de postinstall.
+- Les runs `b`, `f`, `g` **ne sont pas caducs** : recomptés, ils donnent 23/24 recevable.
+  J'avais sur-corrigé.
+
+## Ce que ce chiffre vaut, et ne vaut pas
+
+Sur les 24 détections : 19 sont des secrets réellement exfiltrés, 1 une écriture de
+configuration client (`p10`), 1 un simple contact réseau (`p06`), 2 seulement des
+intentions parce que `curl` est absent (`p09`, `p17`). La pondération (P7) reste à faire.
+
+**Trois runs ne prouvent pas la stabilité** : réfuter un défaut à 10 % exige 29 runs.
+Et le chiffre mesure le banc **sur ses propres sondes**, pas un taux de détection sur du
+vrai malware.

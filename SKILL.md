@@ -238,7 +238,11 @@ appliqué à la lettre, ce critère valide un banc contaminé.
 
 **Le verrou bloque aussi vos propres tests.** `flock` avec `rc=75` est correct, mais une
 unité `systemd-run --wait` encore `active` tient le verrou : le test suivant est refusé
-en 8 ms et il faut attendre la fin réelle de l'unité, pas du `sleep`.
+en 8 ms, et son lecteur rend `REFUS : registre absent — dénominateur inconnu, aucun
+verdict`. Ne pas contourner à la main : chaîner en attendant la fin **réelle** de l'unité
+(`for i in $(seq 1 60); do [ "$(systemctl is-active sbx-<unite>)" != active ] && break; sleep 15; done`),
+puis relancer. Un banc lancé trop tôt ne produit pas une erreur visible : il produit un
+refus qu'on risque de lire comme un échec de la mesure.
 
 ## Le langage ne déplace pas l'interception
 
@@ -384,6 +388,10 @@ Des vérificateurs LLM (Mistral, hy4) ont exigé « `p12-propre` = CLÉ » comme
 ## Mesure honnête
 
 Seul `BANC RECEVABLE` (code 0) se cite. Tout autre verdict : lire la colonne des raisons, ne pas transformer en chiffre.
+
+**Le code de sortie ne se lit jamais à travers un pipe.** `python3 cles.py b | tail -30` rend le code de `tail`, pas celui du lecteur : un run refusé s'affiche « rc=0 » et le verdict devient une formalité. Rediriger vers un fichier, puis lire le code : `python3 -I cles_scenario3.py b > /tmp/verdict.txt; echo rc=$?`.
+
+**Un chiffre n'est comparable qu'à protocole constant.** Changer le harnais, le plafond, la fenêtre d'observation ou l'image invalide **tous** les runs précédents : ils mesurent un autre banc. Après chaque changement de protocole, réétalonner et joindre à chaque run l'empreinte (`sha256sum`) de l'arbre déployé — seule façon de dire plus tard quel chiffre venait de quelle version.
 
 Le protocole complet, les scripts réels et le journal d'audit vivent sur
 `github.com/boris21dd-sketch/sandbox-detonation-npm`. Toute amélioration y est
