@@ -153,6 +153,17 @@ Le protocole complet, les scripts réels et le journal d'audit vivent sur
 publiée avec sa mesure (`scripts/publier.sh "titre" "avant → après"`), pour que
 l'historique dise ce qui a été corrigé **et ce que ça a changé**.
 
+## Module d'entrée, pas seulement require()
+
+`require.main === module` est **faux** sous `require()` : un loader gardé par ce
+test reste invisible pour un harnais qui se contente de charger les entrées. Le
+pilote exécute donc aussi le vrai `main` comme **processus node** (`entree`),
+puis laisse une **fenêtre de settle** (~8 s, silencieuse) pour les charges
+détachées (`spawn detached`, `unref`) qui rendent la main tout de suite.
+
+Preuve exigée : sonde `p16-main-module` qui ne frappe QUE sous `require.main`
+— muette avant la passe, CLÉ après. Un banc sans cette sonde ne prouve rien.
+
 ## Horloge accélérée (mois/années)
 
 Plafonner les délais ne suffit pas : une charge qui compare des dates

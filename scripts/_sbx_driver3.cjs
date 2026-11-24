@@ -161,6 +161,31 @@ function candidats() {
   }
   trace('main', { charge: charges.join(','), esm: pkg.type === 'module', candidats: cands.length, reste_ms: reste() });
 
+  /* MODULE D'ENTREE — un loader garde par `require.main === module` est
+   * invisible pour require()/import() : `require.main` n'est jamais lui. On
+   * execute donc le vrai main comme PROCESSUS node, exactement comme npm le
+   * ferait. Mesure : la sonde p16 (ne frappe que sous require.main) restait
+   * muette avant cette passe, et frappe apres. */
+  const entree = (pkg._sbx_main && fs.existsSync(path.resolve(P, String(pkg._sbx_main))))
+    ? String(pkg._sbx_main)
+    : (fs.existsSync(path.resolve(P, 'index.js')) ? 'index.js' : null);
+  if (entree && reste() > 20000) {
+    try {
+      cp.execFileSync(process.execPath, [path.resolve(P, entree)], {
+        cwd: P, stdio: 'ignore', timeout: Math.min(15000, reste() - 5000),
+        env: { ...process.env, HOME: H }
+      });
+      trace('entree_module', { fichier: entree, ok: true });
+    } catch (e) { trace('entree_module', { fichier: entree, ok: false, err: String(e && e.code || e).slice(0, 40) }); }
+  }
+
+  /* SETTLE — beaucoup de loaders detachent le vrai travail et rendent la main
+   * tout de suite (spawn detached, unref). Demonter a la sortie du pilote rate
+   * l'action. Fenetre muette : elle ne produit aucun evenement a elle seule. */
+  const SETTLE = Number(process.env.SBX_SETTLE_MS || 8000);
+  if (SETTLE > 0) await new Promise((r) => vraiST(r, Math.min(SETTLE, Math.max(0, reste() - 3000))));
+  trace('settle', { ms: SETTLE });
+
   const SESSION = path.join(H, 'wa-session');
   const fakeAuth = () => ({ creds: JSON.parse(fs.readFileSync(path.join(SESSION, 'creds.json'), 'utf8')), keys: {} });
   const piloter = (v) => {
