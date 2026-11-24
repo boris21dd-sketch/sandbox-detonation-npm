@@ -1,8 +1,22 @@
 const fs = require('fs'), path = require('path'), cp = require('child_process'), url = require('url');
 const P = __dirname;
+// NONCE d'attribution : depose par l'hote a cote du pilote (meme canal que
+// _sbx_offset.json). Lu TOUT EN TETE, garde en constante de fermeture, puis le
+// fichier est SUPPRIME avant que le moindre code du paquet ne tourne.
+let NONCE = '';
+// Suffixe des canaris PROPRE A LA SONDE (meme fichier que le nonce) ; defaut historique.
+let SUF = '7f3ac9';
+try {
+  try {
+    const nj = JSON.parse(fs.readFileSync(path.join(P, '_sbx_nonce.json'), 'utf8'));
+    NONCE = String(nj.nonce || '');
+    if (typeof nj.suffixe === 'string' && /^[0-9a-f]{6}$/.test(nj.suffixe)) SUF = nj.suffixe;
+  } catch (e) {}
+  try { fs.unlinkSync(path.join(P, '_sbx_nonce.json')); } catch (e) {}
+} catch (e) {}
 const pkg = JSON.parse(fs.readFileSync(path.join(P, 'package.json'), 'utf8'));
 const H = process.env.HOME || '/work/maison';
-const C = (n) => 'CANARI_' + n + '_7f3ac9';
+const C = (n) => 'CANARI_' + n + '_' + SUF;
 
 // Budget global : le harnais tue a TMO (120 s). Tout ce qui suit doit tenir en 75 s,
 // sinon le vrai main ne serait jamais charge — defaut releve par la revue (196 s
@@ -16,17 +30,24 @@ const BUDGET = 75000;
 // Trace de progression : sans elle, « main non chargé » et « jamais atteint » sont
 // indistinguables — c'est exactement le faux négatif silencieux de la revue.
 const trace = (etape, extra) => {
-  // Le paquet n'est PAS ramené après le run : la trace doit atterrir dans /work/out,
-  // seul répertoire copié (sinon « où s'est-il arrêté » reste invisible).
-  const cibles = ['/work/out/_sbx_etat.jsonl', require('path').join(__dirname, '_sbx_etat.jsonl')];
-  try { console.error('[trace] ' + etape + ' ' + JSON.stringify({ t: Date.now() - T0, ...extra })); } catch (e) {}
-  for (const c of cibles) { try { fs.appendFileSync(c, JSON.stringify({ etape, t: Date.now() - T0, ...extra }) + '\n'); break; } catch (e) {} }
+  // detoner-obs.sh ne rapatrie QUE /work/out/run (tar -C /work/out/run) : l'ancienne
+  // cible /work/out/_sbx_etat.jsonl n'etait JAMAIS copiee (trace perdue a chaque run,
+  // releve par Claude sur detoner-obs.sh:134). Le lecteur la lit dans runs-obs/<tag>/run/.
+  const cibles = ['/work/out/run/_sbx_etat.jsonl', require('path').join(__dirname, '_sbx_etat.jsonl')];
+  try { console.error('[trace] ' + etape + ' ' + JSON.stringify({ t: Date.now() - T0, ...extra, nonce: NONCE })); } catch (e) {}
+  for (const c of cibles) { try { fs.appendFileSync(c, JSON.stringify({ etape, t: Date.now() - T0, ...extra, nonce: NONCE }) + '\n'); break; } catch (e) {} }
 };
 trace('demarrage', { pkg: pkg.name, type: pkg.type || 'commonjs' });
+// FIN sur l'evenement 'exit' : run-entry.js tue le pilote par process.exit() au bout de
+// SBX_OBSERVER_MS (terminer()), avant le minuteur du pilote. Une trace 'fin' posee
+// seulement avant notre propre process.exit() ne serait presque jamais ecrite.
+// Un SIGKILL (delai mural de detonate.js) n'ecrit rien : run incomplet = pas de 'fin'.
+let SBX_FIN_ECRITE = false;
+try { process.on('exit', (code) => { if (SBX_FIN_ECRITE) return; SBX_FIN_ECRITE = true; try { trace('fin', { code }); } catch (e) {} }); } catch (e) {}
 const reste = () => Math.max(0, BUDGET - (VRAI_NOW_MS() - T0));
 
 function mk(p, s) { try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, s); } catch (e) {} }
-mk(path.join(H, '.npmrc'), '//registry.npmjs.org/:_authToken=' + C('NPM') + '\n');
+mk(path.join(H, '.npmrc'), '//registry.npmjs.org/:_authToken=' + C('NPM') + '\n@corp:registry=https://npm.corp-interne.test/\n');
 mk(path.join(H, '.ssh', 'id_ed25519'), '-----BEGIN OPENSSH PRIVATE KEY-----\n' + C('SSH') + '\n');
 mk(path.join(H, '.aws', 'credentials'), '[default]\naws_access_key_id=' + C('AWS') + '\n');
 mk(path.join(H, '.config', 'gh', 'hosts.yml'), 'oauth_token: ' + C('GH') + '\n');
@@ -169,6 +190,7 @@ function candidats() {
   const entree = (pkg._sbx_main && fs.existsSync(path.resolve(P, String(pkg._sbx_main))))
     ? String(pkg._sbx_main)
     : (fs.existsSync(path.resolve(P, 'index.js')) ? 'index.js' : null);
+  if (entree && reste() <= 20000) trace('entree_sautee', { reste_ms: reste() });
   if (entree && reste() > 20000) {
     try {
       cp.execFileSync(process.execPath, [path.resolve(P, entree)], {

