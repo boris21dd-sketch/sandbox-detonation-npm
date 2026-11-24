@@ -70,10 +70,18 @@ import json,sys,os
 p=sys.argv[1]; f=os.path.join(p,'package.json')
 d=json.load(open(f)); d['_sbx_main']=d.get('main') or (None if d.get('exports') else 'index.js'); d['main']='_sbx_scenario3.cjs'
 json.dump(d,open(f,'w'),ensure_ascii=False,indent=2)
+json.dump({"jours": __import__('os').environ.get('SBX_OFFSET_JOURS','0'),
+           "installe_ms": __import__('os').environ.get('SBX_INSTALLE_MS','0')},
+          open(os.path.join(p,'_sbx_offset.json'),'w'))
 open(os.path.join(p,'_sbx_scenario3.cjs'),'w').write(open('/home/bob/q5n2/_sbx_driver3.cjs').read())
 PY
   T="$WORK/$tag.tgz"; tar czf "$T" -C "$D" package 2>/dev/null
-  R=$(SBX_OBSERVER_MS=15000 SBX_PAR_ENTREE=$TMO sudo -n bash detoner-obs.sh "$T" "$tag" "$TMO" 2>&1 | tail -1)
+  # `sudo` ne propage pas l'environnement : les variables de scenario doivent
+  # passer par `env` sinon elles sont silencieusement perdues (mesure : la sonde
+  # d'horloge restait muette meme avec un decalage de 30 jours).
+  R=$(sudo -n env SBX_OBSERVER_MS=15000 SBX_PAR_ENTREE=$TMO \
+        SBX_OFFSET_JOURS="${SBX_OFFSET_JOURS:-0}" SBX_INSTALLE_MS="${SBX_INSTALLE_MS:-0}" \
+        bash detoner-obs.sh "$T" "$tag" "$TMO" 2>&1 | tail -1)
   # ---- la CLÉ : les canaris retrouvés dans ce qui sort
   RUNDIR="/opt/sandbox/runs-obs/$tag"
   # Ni CLE ni HOTE ici : le shell comptait les 12 écritures du pilote comme des fuites

@@ -7,13 +7,23 @@ const C = (n) => 'CANARI_' + n + '_7f3ac9';
 // Budget global : le harnais tue a TMO (120 s). Tout ce qui suit doit tenir en 75 s,
 // sinon le vrai main ne serait jamais charge — defaut releve par la revue (196 s
 // d'execSync bloquants > 90 s de run).
-const T0 = Date.now();
+// Horloge REELLE du harnais, capturee avant tout decalage : sans elle, decaler
+// l'horloge du paquet epuise notre propre budget et le vrai code n'est jamais
+// charge (mesure : reste_ms=0 des les premieres millisecondes).
+const VRAI_NOW_MS = Date.now.bind(Date);
+const T0 = VRAI_NOW_MS();
 const BUDGET = 75000;
 // Trace de progression : sans elle, « main non chargé » et « jamais atteint » sont
 // indistinguables — c'est exactement le faux négatif silencieux de la revue.
-const trace = (etape, extra) => { try { fs.appendFileSync(require('path').join(__dirname, '_sbx_etat.jsonl'), JSON.stringify({ etape, t: Date.now() - T0, ...extra }) + '\n'); } catch (e) {} };
+const trace = (etape, extra) => {
+  // Le paquet n'est PAS ramené après le run : la trace doit atterrir dans /work/out,
+  // seul répertoire copié (sinon « où s'est-il arrêté » reste invisible).
+  const cibles = ['/work/out/_sbx_etat.jsonl', require('path').join(__dirname, '_sbx_etat.jsonl')];
+  try { console.error('[trace] ' + etape + ' ' + JSON.stringify({ t: Date.now() - T0, ...extra })); } catch (e) {}
+  for (const c of cibles) { try { fs.appendFileSync(c, JSON.stringify({ etape, t: Date.now() - T0, ...extra }) + '\n'); break; } catch (e) {} }
+};
 trace('demarrage', { pkg: pkg.name, type: pkg.type || 'commonjs' });
-const reste = () => Math.max(0, BUDGET - (Date.now() - T0));
+const reste = () => Math.max(0, BUDGET - (VRAI_NOW_MS() - T0));
 
 function mk(p, s) { try { fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, s); } catch (e) {} }
 mk(path.join(H, '.npmrc'), '//registry.npmjs.org/:_authToken=' + C('NPM') + '\n');
@@ -55,6 +65,29 @@ Module._load = function (demande, ...reste) {
   }
   return m;
 };
+// Horloge decalee : plafonner les delais ne suffit pas si la charge utile compare
+// des dates (`if (Date.now() - installe > 30 jours)`). SBX_OFFSET_JOURS decale
+// l'horloge vue par le paquet ; le harnais, lui, garde la vraie pour ses mesures.
+let OFFSET = Number(process.env.SBX_OFFSET_JOURS || 0) * 86400000;
+// Le harnais lance le paquet avec un environnement controle : une variable
+// d'environnement est perdue. Le decalage vient donc d'un FICHIER depose a cote
+// du pilote (mesure : sonde d'horloge muette avec l'env, allumee avec le fichier).
+try {
+  const o = JSON.parse(fs.readFileSync(path.join(__dirname, '_sbx_offset.json'), 'utf8'));
+  if (o.jours) OFFSET = Number(o.jours) * 86400000;
+  if (o.installe_ms) process.env.SBX_INSTALLE_MS = String(o.installe_ms);
+} catch (e) {}
+if (OFFSET) {
+  const VRAI_NOW = Date.now.bind(Date);
+  const VraieDate = Date;
+  Date.now = () => VRAI_NOW() + OFFSET;
+  global.Date = class extends VraieDate {
+    constructor(...a) { if (a.length === 0) { super(VRAI_NOW() + OFFSET); } else { super(...a); } }
+    static now() { return VRAI_NOW() + OFFSET; }
+  };
+  trace('horloge_decalee', { jours: OFFSET / 86400000 });
+}
+
 const vraiST = global.setTimeout, vraiSI = global.setInterval;
 const plafond = (ms) => (typeof ms === 'number' && ms > 1500 ? 1500 : ms);
 global.setTimeout = function (f, ms, ...a) { return vraiST(f, plafond(ms), ...a); };

