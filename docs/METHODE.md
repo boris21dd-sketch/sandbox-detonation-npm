@@ -68,4 +68,3 @@ fichier jamais écrit.
 (journal inchangé plus de 25 minutes), sans jamais relancer si un banc tourne
 encore. Silencieuse quand tout va bien.
 
-<!-- etat : 13/13, temoin muet -->
