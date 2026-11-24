@@ -109,6 +109,13 @@ scripts de cycle de vie + bins + exports pilotés + délais écrasés : c'est un
 **absence étayée**, pas une innocence. La formuler ainsi, jamais « le paquet
 est propre ».
 
+## Dépôt dédié
+
+Le protocole complet, les scripts réels et le journal d'audit vivent sur
+`github.com/boris21dd-sketch/sandbox-detonation-npm`. Toute amélioration y est
+publiée avec sa mesure (`scripts/publier.sh "titre" "avant → après"`), pour que
+l'historique dise ce qui a été corrigé **et ce que ça a changé**.
+
 ## Enchaînement
 
 0. Construire ou rejouer le banc **avant** de promettre quoi que ce soit :
