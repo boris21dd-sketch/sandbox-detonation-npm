@@ -66,3 +66,17 @@ des 29 runs.
   font six caractères (`s01011`). Les 29 « contrôles positifs manquants » du premier passage
   étaient un défaut de mon script, pas du banc. Corrigé, puis 0 manquant.
 - le nom exact de la sonde est `p22-registry-ssh`, pas `p22-registry`.
+
+## Verdict des deux vérificateurs sur ces résultats
+
+Aucun des deux ne « valide » au sens fort. Les deux accordent la même formulation, et c'est
+celle qui doit être employée :
+
+> **déclaration de l'opérateur sur sa propre machine, non ancrée extérieurement. Rien de plus.**
+
+Ce qui passe leur recalcul : `725 = 29 × 25`, `696 = 24 × 29`, `0,9²⁹ = 4,71 %`.
+Ce qu'ils refusent : le lien sceau ↔ exécutions. `registres-sceau.txt` empreinte les registres
+entre eux, pas le code exécuté au moment de chaque run ; aucun horodatage d'exécution n'y figure.
+Et le sceau du fichier de provenance a changé de valeur en cours de session (`264bcda2…` puis
+`0edd08e6…` à 11:36), sans que la chronologie sceau/correction soit documentée — donc le sceau
+affiché est postérieur aux runs et ne les couvre pas.
