@@ -1,0 +1,12 @@
+{"run": "r1", "phase": "avant", "date": "2026-11-25T13:04:43+01:00",
+ "image": "",
+ "files": {
+  "sbx-scenario3.sh": "6a30e6b6cc5abf38be8209450bf41cc4c7aefd5734ae450ab2e3b74da544a967",
+  "fabrique_sondes.py": "05cb492e96a4abf7693b05c383d6140116e97a5c07837a804af8e8c8b5736f51",
+  "cles_scenario3.py": "f92144e71e4be4b5763b0df0a4e6c95a36e3eda388685165406054c037a1b3e2",
+  "liste_sondes.tsv": "eec89594e264932a1ce596d30e1c34dbcca38d7aa7ea503f33dbc4c57c1d6272",
+  "sondes/attendus.json": "ec831596576a7384228d78d7af311f0fd323c70dc3d8d01859da1ca6d67b00fa",
+  "lancer-stabilite-v2.sh": "01d6eb4dde9ff4290f65556721c523baccae1ffa3d6be622facf51b9a9cdd1f5",
+  "/opt/sandbox/harnais/lib/sbx/log.js": "08f57ff7fef2c3a43d969b0eddcf1df3e55b7f0dcfefd2099b853a4571c182a3",
+  "/usr/local/sbin/sbx-docker-ctl": "dced20416f10819db8a4c1d6279244b72776cf81b7d6f960a766a5caa8d5ab64"
+ }}
