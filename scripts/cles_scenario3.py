@@ -30,6 +30,7 @@ def chemins():
         "scratch": os.environ.get("SBX_SCRATCH", "/home/bob/.hermes/cache/scratch"),
         "attendus": os.environ.get("SBX_ATTENDUS", "/home/bob/q5n2/sondes/attendus.json"),
         "json_dir": os.environ.get("SBX_JSON_DIR", "/home/bob/q5n2"),
+        "code_attendu": os.environ.get("SBX_CODE_ATTENDU", "/home/bob/q5n2/code-attendu.json"),
     }
 
 
@@ -37,6 +38,18 @@ SUF_DEFAUT = "7f3ac9"
 HOTE_LEURRE = "leurre.exfil-probe.test"
 SONDE_LEURRE = "p21-leurre-orphelin"
 SONDE_TEMOIN = "p12-propre"
+# Classes de sondes (attendus.json). Ancien format : seulement "CLÉ" ou "—".
+CLASSE_LEURRE = "CONTRÔLE-LEURRE"
+CLASSE_INTENTION = "INTENTION"
+CLASSES = ("CLÉ", "—", CLASSE_INTENTION, CLASSE_LEURRE)
+
+
+def duree_max_ms() -> int:
+    """Durée au-delà de laquelle un run est tenu pour interrompu (SBX_DUREE_MAX_MS)."""
+    try:
+        return int(os.environ.get("SBX_DUREE_MAX_MS", "130000"))
+    except ValueError:
+        return 130000
 CANAUX_RESEAU = {"https.request", "http.request", "net.write", "net.connect", "tls.connect", "dns.lookup", "dns.resolve", "ws.send", "fetch",
                  "websocket", "websocket.send", "http2.connect", "http.corps", "https.corps", "corps"}
 # Canaux ou un canari prouve une sortie (valeur + detail serialise). JAMAIS `fs.*` :
@@ -228,16 +241,40 @@ def lit_registre(chemin: str) -> list:
     return entrees
 
 
-def classe(e: dict, runs: str) -> dict:
-    """Verdict d'UNE sonde du registre, dans l'ordre de décision du contrat."""
+def lit_identite(run: str):
+    """(code_sha256, code) lus dans <run>/summary.json ; (None, None) si absent/illisible."""
+    try:
+        with open(os.path.join(run, "summary.json"), encoding="utf-8") as f:
+            j = json.load(f)
+    except Exception:
+        return None, None
+    if not isinstance(j, dict):
+        return None, None
+    sha = j.get("code_sha256")
+    code = j.get("code")
+    return (sha if isinstance(sha, str) and sha else None), (code if isinstance(code, dict) else None)
+
+
+def fichiers_differents(exec_code, attendu_code) -> list:
+    if not isinstance(exec_code, dict) or not isinstance(attendu_code, dict):
+        return []
+    return sorted(k for k in set(exec_code) | set(attendu_code) if exec_code.get(k) != attendu_code.get(k))
+
+
+def classe(e: dict, runs: str, classe_att=None, code_attendu=None) -> dict:
+    """Verdict d'UNE sonde du registre, dans l'ordre de décision du contrat.
+    classe_att : classe de la sonde dans attendus.json (None = inconnue).
+    code_attendu : contenu de code-attendu.json (None = manifeste absent)."""
     tag, nom, nonce = e["tag"], e["nom"], e["nonce"]
+    leurre = classe_att == CLASSE_LEURRE
     suf = e.get("suffixe") or SUF_DEFAUT
     npm_rc = str(e.get("npm_rc", "-"))
     d = os.path.join(runs, tag)
     run = os.path.join(d, "run")
     r = {"tag": tag, "nom": nom, "etat": "", "raisons": [], "nonce_evenement": "",
          "redemarrage": e["redemarrage"], "garde": e["garde"],
-         "hotes": set(), "execs": [], "canaris_reseau": set(), "canaris_exec": set(), "ecritures_hors": []}
+         "hotes": set(), "execs": [], "canaris_reseau": set(), "canaris_exec": set(), "ecritures_hors": [],
+         "config_client": [], "code_sha256": None, "classe": classe_att}
 
     # 1. garde du registre
     if e["garde"] != "OK":
@@ -251,6 +288,7 @@ def classe(e: dict, runs: str) -> dict:
         r["raisons"].append("nonce absent ou trop court dans le registre")
         return r
 
+    r["code_sha256"], code_exec = lit_identite(run)
     fi_evs = lire_jsonl(os.path.join(d, "faux-internet.jsonl"))
     ev_evs = lire_jsonl(os.path.join(run, "events.jsonl"))
     fi = analyse_faux_internet(fi_evs, suf)
@@ -260,7 +298,7 @@ def classe(e: dict, runs: str) -> dict:
     # 1 bis. l'hôte leurre (AVANT la branche DETECTION NON LOGGUEE : sinon un orphelin
     # fabriquerait une DNL hors de p21 — trou relevé par Sonnet, fermé ici)
     # l'hôte leurre hors de sa sonde = orphelin d'une sonde précédente
-    if nom != SONDE_LEURRE:
+    if nom != SONDE_LEURRE and not leurre:
         brut = ""
         for fichier in (os.path.join(d, "faux-internet.jsonl"), os.path.join(run, "events.jsonl")):
             try:
@@ -330,15 +368,32 @@ def classe(e: dict, runs: str) -> dict:
     toutes_hors = sorted(set(ev["ecritures_hors"]))
     r["ecritures_hors"] = toutes_hors[:8]
     config_client = [c for c in toutes_hors if any(k in c for k in (".claude", ".codex", ".cursor", ".gemini", ".mcp"))]
+    r["config_client"] = config_client
     cle = bool(r["canaris_reseau"] or r["canaris_exec"] or r["hotes"] or r["execs"] or config_client)
-    # Un run qui expire n'est pas citable : le cron du 25/11 a releve n024 en rc=124
-    # (140 s de timeout) compte comme CLÉ. Une detection sur un run interrompu ne
-    # prouve pas que la sonde a fini de frapper.
-    interrompu = str(npm_rc) in ("124", "137") or (
-        str(e.get("duree_ms", "")).isdigit() and int(e["duree_ms"]) > 120000)
-    if cle and interrompu:
+    # Run interrompu : lu dans fin.json ECRIT PAR ROOT (fin_root[0]), pas dans le registre.
+    # `rc` = code de detonation (124/137 = timeout), `duree_ms` = duree mesuree par root.
+    # npm_rc (code de `npm install`) ne sert qu'a D7 (ci-dessous). fin.json absent : inchange.
+    # Exception nommee : la sonde CONTRÔLE-LEURRE (l'orphelin tient strace/docker exec).
+    interrompu, detail_int = False, ""
+    if fin_root and not leurre:
+        rc = fin_root[0].get("rc")
+        duree = fin_root[0].get("duree_ms")
+        rc_ko = rc is not None and str(rc).strip() != "0"
+        duree_ok = isinstance(duree, (int, float)) and not isinstance(duree, bool) or (
+            isinstance(duree, str) and duree.strip().isdigit())
+        duree_ko = duree_ok and int(float(duree)) > duree_max_ms()
+        interrompu = rc_ko or duree_ko
+        detail_int = f"run interrompu (rc={rc}, duree_ms={duree})"
+    if leurre:
+        # Contrôle, jamais une détection : recevable si SON run montre l'hôte leurre.
+        if HOTE_LEURRE in r["hotes"]:
+            r["etat"] = "CONTRÔLE OK"
+        else:
+            r["etat"] = "CONTRÔLE KO"
+            r["raisons"].append(f"hôte leurre {HOTE_LEURRE} absent du run de la sonde leurre")
+    elif cle and interrompu:
         r["etat"] = "CLÉ NON RECEVABLE"
-        r["raisons"].append(f"run interrompu (rc={npm_rc}, duree_ms={e.get('duree_ms')})")
+        r["raisons"].append(detail_int)
     elif cle:
         if r["nonce_evenement"] == "present" and e["redemarrage"] == "OK":
             r["etat"] = "CLÉ"
@@ -349,7 +404,11 @@ def classe(e: dict, runs: str) -> dict:
             if e["redemarrage"] != "OK":
                 r["raisons"].append(f"redemarrage={e['redemarrage'] or 'inconnu'}")
     else:
-        if npm_rc not in ("0", "-"):
+        if interrompu:
+            # Silence d'un run interrompu : le paquet n'a pas tourné jusqu'au bout, rien n'est prouvé.
+            r["etat"] = "— NON RECEVABLE (run interrompu)"
+            r["raisons"].append(detail_int)
+        elif npm_rc not in ("0", "-"):
             # Rien n'est sorti, mais les dependances n'ont pas ete installees : le
             # silence ne prouve rien (npm a echoue, le paquet n'a pas tourne en entier).
             r["etat"] = f"— NON RECEVABLE (dépendances non installées, npm_rc={npm_rc})"
@@ -359,6 +418,22 @@ def classe(e: dict, runs: str) -> dict:
         else:
             r["etat"] = "— NON RECEVABLE (pas de trace fin)"
             r["raisons"].append("pas de trace fin au bon nonce")
+
+    # T3 : identité du code exécuté, comparée au manifeste attendu (s'il existe).
+    if code_attendu is not None:
+        sha_att = code_attendu.get("code_sha256")
+        if r["code_sha256"] is None:
+            r["raisons"].append("identité du code absente")
+            if r["etat"] == "CLÉ":
+                r["etat"] = "CLÉ NON RECEVABLE"
+            elif r["etat"] == "—":
+                r["etat"] = "— NON RECEVABLE"
+            elif r["etat"] == "CONTRÔLE OK":
+                r["etat"] = "CONTRÔLE KO"
+        elif r["code_sha256"] != sha_att:
+            diff = fichiers_differents(code_exec, code_attendu.get("code"))
+            r["etat"] = "BANC INVALIDE"
+            r["raisons"].append("code exécuté ≠ code-attendu.json (" + (", ".join(diff) if diff else "fichiers non identifiés") + ")")
     return r
 
 
@@ -449,6 +524,50 @@ def canaris(blob: str, suf: str = SUF_DEFAUT):
     return trouves
 
 
+def classe_attendue(att):
+    """Classe d'une valeur d'attendus.json ; None si absente ou inconnue."""
+    return att if att in CLASSES else None
+
+
+def nature(r: dict) -> str:
+    """Même classification que le contrat : canari > config client > contact > intention."""
+    if r["canaris_reseau"] or r["canaris_exec"]:
+        return "canari"
+    if r["config_client"]:
+        return "config"
+    if r["hotes"] and not r["execs"]:
+        return "contact"
+    return "intention"
+
+
+def resume(lignes: list) -> dict:
+    """Compteurs du résumé final (T2) à partir des verdicts par sonde."""
+    det = [r for r in lignes if r["classe"] == "CLÉ"]
+    inte = [r for r in lignes if r["classe"] == CLASSE_INTENTION]
+    leur = [r for r in lignes if r["classe"] == CLASSE_LEURRE]
+    tem = [r for r in lignes if r["nom"] == SONDE_TEMOIN]
+    nat = Counter(nature(r) for r in lignes if r["etat"] == "CLÉ" and r["classe"] != CLASSE_LEURRE)
+    return {
+        "detections": sum(1 for r in det if r["etat"] == "CLÉ"), "detections_sur": len(det),
+        "intentions": sum(1 for r in inte if r["etat"] == "CLÉ"), "intentions_sur": len(inte),
+        "temoin": "—" if tem and all(r["etat"] == "—" for r in tem) else "KO",
+        "leurre": ("n/a" if not leur else ("OK" if all(r["etat"] == "CONTRÔLE OK" for r in leur) else "KO")),
+        "nature": {k: nat.get(k, 0) for k in ("canari", "config", "contact", "intention")},
+    }
+
+
+def charge_code_attendu(chemin: str):
+    """Manifeste attendu (dict) ; None s'il n'existe pas ou est illisible."""
+    if not os.path.isfile(chemin):
+        return None
+    try:
+        with open(chemin, encoding="utf-8") as f:
+            j = json.load(f)
+    except Exception:
+        return None
+    return j if isinstance(j, dict) and isinstance(j.get("code_sha256"), str) else None
+
+
 def main():
     try:
         sys.stdout.reconfigure(encoding="utf-8")
@@ -475,6 +594,7 @@ def main():
             attendus = {}
     except Exception:
         attendus = {}
+    code_attendu = charge_code_attendu(ch["code_attendu"])
 
     # Dossiers au bon motif mais absents du registre : ignorés, jamais comptés.
     motif = re.compile(rf"^{re.escape(prefixe)}\d{{3}}$")  # nos tags ont trois chiffres : fn001…
@@ -484,26 +604,39 @@ def main():
     except OSError:
         hors = []
 
-    lignes = [classe(e, ch["runs"]) for e in registre]
+    lignes = [classe(e, ch["runs"], classe_attendue(attendus.get(e["nom"])), code_attendu) for e in registre]
     ecarts = []
+
+    valeurs = sorted({r["code_sha256"] for r in lignes if r["code_sha256"]})
+    if len(valeurs) == 1:
+        print(f"code_sha256 exécuté : {valeurs[0]}")
+    elif not valeurs:
+        print("code_sha256 exécuté : aucun (summary.json sans identité)")
+    else:
+        print("code_sha256 exécuté : PLUSIEURS VALEURS : " + ", ".join(valeurs))
+        ecarts.append("code_sha256 exécuté : PLUSIEURS VALEURS dans un run (" + ", ".join(valeurs) + ")")
+
     for r in lignes:
         etat = r["etat"]
         extra = ""
-        if etat.startswith(("CLÉ", "—", "DETECTION NON LOGGUEE")):
+        if etat.startswith(("CLÉ", "—", "DETECTION NON LOGGUEE", "CONTRÔLE")):
             extra = (f" hotes={sorted(r['hotes'])} exec={len(r['execs'])} "
                      f"canaris_reseau={sorted(r['canaris_reseau'])} canaris_exec={sorted(r['canaris_exec'])} "
                      f"ecrit_hors={r['ecritures_hors']} nonce_evenement={r['nonce_evenement'] or '-'}")
         if r["raisons"]:
             extra += " raisons=" + "; ".join(r["raisons"])
-        print(f"{r['tag']:8s} {r['nom'][:30]:30s} {etat}{extra}")
-        recevable = etat in ("CLÉ", "—")
+        affiche = etat + (" (intention)" if r["classe"] == CLASSE_INTENTION and etat == "CLÉ" else "")
+        print(f"{r['tag']:8s} {r['nom'][:30]:30s} {affiche}{extra}")
         att = attendus.get(r["nom"])
         r["attendu"] = att
+        recevable = etat in ("CLÉ", "—", "CONTRÔLE OK")
+        # classe INTENTION : recevable si CLÉ ; CONTRÔLE-LEURRE : CONTRÔLE OK ; sinon l'attendu tel quel.
+        attendu_etat = {CLASSE_INTENTION: "CLÉ", CLASSE_LEURRE: "CONTRÔLE OK"}.get(att, att)
         if not recevable:
             ecarts.append(f"{r['tag']} {r['nom']}: {etat}" + (f" ({'; '.join(r['raisons'])})" if r["raisons"] else ""))
         elif att is None:
             ecarts.append(f"{r['tag']} {r['nom']}: sans attendu (non recevable)")
-        elif att != etat:
+        elif attendu_etat != etat:
             ecarts.append(f"{r['tag']} {r['nom']}: obtenu {etat}, attendu {att}")
     for t in hors:
         print(f"{t:8s} {'':30s} HORS REGISTRE (ignoré)")
@@ -514,6 +647,11 @@ def main():
     elif any(r["etat"] != "—" for r in temoin):
         ecarts.append(f"{SONDE_TEMOIN}: doit valoir « — »")
 
+    res = resume(lignes)
+    # BANC RECEVABLE exige le leurre CONTRÔLE OK si p21 est au registre (classe CONTRÔLE-LEURRE).
+    if any(r["classe"] == CLASSE_LEURRE and r["etat"] != "CONTRÔLE OK" for r in lignes):
+        ecarts.append(f"{SONDE_LEURRE}: le contrôle leurre doit valoir CONTRÔLE OK")
+
     recevable = not ecarts
     verdict = "BANC RECEVABLE" if recevable else "BANC NON RECEVABLE"
     compte = Counter(r["etat"] for r in lignes)
@@ -523,7 +661,7 @@ def main():
                    "raisons": r["raisons"], "nonce_evenement": r["nonce_evenement"],
                    "redemarrage": r["redemarrage"], "hotes": sorted(r["hotes"]), "execs": len(r["execs"]),
                    "canaris_reseau": sorted(r["canaris_reseau"]), "canaris_exec": sorted(r["canaris_exec"]),
-                   "ecritures_hors": r["ecritures_hors"]} for r in lignes]
+                   "ecritures_hors": r["ecritures_hors"], "code_sha256": r["code_sha256"]} for r in lignes]
         with open(os.path.join(ch["json_dir"], f"cles-{prefixe}.json"), "w", encoding="utf-8") as f:
             json.dump(sortie, f, ensure_ascii=False, indent=1)
 
@@ -533,6 +671,14 @@ def main():
         print("Écarts :")
         for x in ecarts:
             print(f"  - {x}")
+    n = res["nature"]
+    print(f"Détections : {res['detections']}/{res['detections_sur']} (sondes de détection) | "
+          f"intentions : {res['intentions']}/{res['intentions_sur']} | "
+          f"contrôles : témoin {res['temoin']}, leurre {res['leurre']}")
+    print(f"Nature : canari exfiltré {n['canari']}, config client {n['config']}, "
+          f"contact réseau seul {n['contact']}, intention {n['intention']}")
+    if code_attendu is None:
+        print("code-attendu.json absent : identité du code non vérifiée")
     print(verdict)
     return 0 if recevable else 1
 

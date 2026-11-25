@@ -20,6 +20,16 @@ et hy4 en second vérificateur) sur le script et le pilote exacts. Un protocole
 faux coûte des heures et produit des chiffres faux. Poser des questions fermées
 (BLOQUANT / NON BLOQUANT) et exiger la ligne à corriger.
 
+**Faire tourner UN run et le soumettre avant la série.** Si le dispositif est jugé non probant
+sur un run, il le sera sur trente : lancer la série d'abord, c'est payer des heures pour
+répéter un défaut déjà nommé. Un run, une soumission, puis la chaîne — et n'enchainer qu'après
+un accord explicite sur ce run-là.
+
+La règle vaut **aussi pour le déploiement** : un script qui réécrit une commande forcée, une règle
+d'élévation ou un fichier de clés est relu par le vérificateur qui ne l'a pas écrit **avant**
+exécution, jamais après. Et si l'exécution est lancée puis arrêtée, prouver que rien n'a bougé en
+relisant l'état réel (la ligne `command="…"` inchangée), pas en déclarant qu'on l'a décidé.
+
 Faire **alterner** les deux vérificateurs sur plusieurs passes : chaque passe reçoit
 l'avis de la précédente et doit dire ce qu'elle **retire** et ce qu'elle **maintient**.
 C'est là que les erreurs tombent — un vérificateur a retiré sa propre explication de
@@ -46,6 +56,16 @@ de runs : `0,99³ = 97 %` décrit un défaut à **1 %**, pas à 10 % — annonce
 une passe. Écrire aussi ce que le nombre de runs ne prouvera jamais : la couverture
 d'une sonde qui ne teste rien reste vide, répétée trente fois.
 Écrire une **injection de faute déterministe** — elle tranche en un seul run.
+
+**Quand la boucle de refus ne s'arrête plus, changer leur rôle.** Un vérificateur à qui l'on
+demande « validez-vous ? » rend un refus ; le même, à qui l'on demande « écris les modifications
+nécessaires, code complet, avec pour chaque étape ce qu'on doit voir si ça marche et si ça échoue »,
+rend des patches applicables. Poser la question fermée sur **un** maillon à la fois, et lui
+redonner ses propres mots en tête de commande : il corrige exactement ce qu'il a objecté, au lieu
+d'ouvrir un nouveau front. Le juge constate, l'ingénieur corrige — ne pas demander les deux dans la
+même passe. Exiger qu'il marque `# INCONNU:` **à l'endroit exact** où une information lui manque
+plutôt que de la combler : une valeur inventée produit un patch plausible, faux, et déployé sans
+qu'on le voie.
 
 ## Les trois couches
 
@@ -212,6 +232,18 @@ La preuve se lit dans `scripts/cles_scenario3.py` : un canari dans un événemen
     `entrees.jsonl` sortait « — ». Un calcul juste dans une fonction morte ne protège
     rien. Tester la **branche** (un dossier sans `run/entrees.jsonl` doit sortir
     `BANC INVALIDE`), pas la fonction qui la produit.
+    Variante mesurée, encore plus silencieuse : le garde-fou « run interrompu » lisait un
+    code de sortie et une durée **sur la ligne du registre**, qui ne porte ni l'un ni
+    l'autre — la condition était donc toujours fausse, et toute sonde interrompue sortait
+    `CLÉ`. Un garde dont les champs n'existent pas dans l'enregistrement qu'il inspecte est
+    un garde mort. Le prouver en **injectant** le cas : écrire un `fin.json` à `rc:124` et
+    exiger que le lecteur refuse, au lieu de conclure « aucun run interrompu » parce que la
+    campagne n'en a pas montré.
+    Second piège du même genre : **une règle réécrite après avoir vu le cas n'est pas celle
+    qui était en vigueur**. Si un critère a été amendé en cours de route (ici « le rc qui
+    fait foi » redéfini après avoir vu un `rc=124`), la campagne doit être rejouée sous le
+    critère d'origine, ou le critère déclaré non citable — relire l'erratum ne répare pas
+    les runs déjà faits.
 23. **Un dossier de run périmé est lu comme une détection.** Une sonde refusée par
     une garde (`continue`) n'appelle jamais le harnais, mais son ancien
     `runs-obs/<tag>` reste en place : l'agrégateur le relit et rend `CLÉ`. Reproduit
@@ -397,6 +429,67 @@ de confiance explicitement — la machine de l'opérateur, le sceau protégeant 
 non d'un opérateur malveillant — puis arrêter la boucle, au lieu d'empiler des passes qui ne
 concluront jamais.
 
+**Donner aux vérificateurs un modèle de menace, au lieu de les laisser l'élargir.** Le banc se
+juge contre l'**erreur**, pas contre la fraude : opérateur de bonne foi, propriétaire de la
+machine et seul consommateur du résultat, agents faillibles. Ce qu'on prouve : code exécuté ≠
+code relu, fichier périmé, garde morte, chiffre mal étiqueté, contamination entre sondes. Un
+refus qui ne repose que sur « l'opérateur pourrait tout réécrire » est hors sujet — le renvoyer
+en exigeant qu'il nomme une erreur possible et le test qui la détecte. Sur une machine où
+l'administrateur du système, le root du sous-système et le titulaire du socket de conteneurs
+sont la même personne, cette preuve-là est **impossible par construction** : la chercher coûte
+des heures et ne produit que des refus. La seule voie réelle, si un tiers doit un jour être
+convaincu : faire tourner le banc — synthétique, jamais de vrai malware — sur une
+infrastructure qui n'appartient pas à l'opérateur, qui exécute le commit exact et horodate les
+journaux côté serveur.
+
+**L'ancrage externe par run est néanmoins faisable, et c'est ce qui fait avancer la validation.**
+Écrire avant et après **chaque** run un manifeste (horodatage, digest de l'image, empreintes des
+fichiers réellement exécutés — fabrique et orchestrateur compris), puis le **publier**. Le
+constructeur de manifeste doit **échouer bruyamment** sur un fichier manquant et compter ce
+qu'il a hashé : une substitution de chemin fautive (`${f/\/opt:/\/opt}`) a transformé des
+entrées en chemins inexistants, le test d'existence a échoué, et le manifeste a **omis en
+silence** le détoneur et le harnais — seul symptôme, un champ `image` vide. Comparer le
+nombre d'empreintes au nombre attendu et refuser de publier sinon ; un manifeste incomplet
+est pire qu'aucun, il atteste du code qui n'a pas tourné. Mais **pousser un commit ne date rien** : `GIT_AUTHOR_DATE`,
+`GIT_COMMITTER_DATE` et `--date=` sont écrits par le client, et l'API GitHub n'expose pour un
+commit que `author.date`/`committer.date` — aucun `received_at`. Séparer engagement et résultat en
+deux commits ne change rien. Le seul horodatage citable est un objet créé **par le serveur** (issue
+ou release via l'API), et son **corps doit porter les empreintes** : une réservation d'horodatage
+nue ne relie l'heure à aucun contenu et ne discrimine pas entre « j'avais ce code » et « j'ai
+choisi ce code après coup ». Même complet, il ne franchit pas le dernier saut — les empreintes
+sont calculées par la machine de l'opérateur, pas par l'exécutant : seul le harnais déclarant
+lui-même, au démarrage et avant de charger le paquet, les digests des fichiers qu'il charge relie
+l'objet aux octets réellement exécutés. Sans cela, `registres-sceau` n'empreinte que les registres
+entre eux et le vérificateur répond, à juste titre, que le code scellé n'est pas prouvé être celui
+qui tournait. Procédure, code et critères RÉUSSITE/ÉCHEC : `references/ancrage-externe.md`.
+
+**Une preuve produite par celui qui lance ne vaut pas contre lui.** C'est la conclusion où les
+deux vérificateurs arrivent, et elle condamne toute une famille de solutions séduisantes :
+un préchargement injecté par `NODE_OPTIONS=--require` ou par la ligne de commande du conteneur,
+un événement `seq=0` émis par du code que l'opérateur a écrit, des empreintes calculées côté
+hôte — tout cela est **circulaire**. Celui qui lance peut lancer sans le préchargement, avec
+un autre fichier, ou avec la variable vide ; et un `seq=0` qui hashe un *chemin* via `fs` ne
+prouve rien sur la *source* réellement passée à `Module.prototype._compile` (TOCTOU, cache de
+require, symlinks, `NODE_PATH`, loaders ESM). Le maillon n'est franchi que si la **commande de
+lancement** est écrite par root (ou un tiers) et non modifiable par l'opérateur.
+Corollaire à vérifier **avant** tout le reste : le script que root exécute — une porte à
+commande forcée, par exemple — ne doit pas appartenir à l'opérateur. Un `chown <user>` sur ce
+script laisse root exécuter du code réécrivable à volonté, et tout ce qui est construit
+derrière devient nul. Le corriger **sans root dans le sous-système est possible** : un fichier
+posé par un compte d'administration, ACL coupée sur les seuls SID Administrateurs et SYSTEM, que
+root exécute à travers le montage — et dont la preuve est un `Permission denied` mesuré depuis
+le compte de l'opérateur, jamais la lecture de l'ACL. Recette, contraintes des distributions
+(une par utilisateur Windows) et ordre de déploiement : `references/ancrage-externe.md`.
+
+**Ne jamais réécrire le fichier de provenance après le lancement.** Une session a produit deux
+sceaux successifs (`264bcda2…` puis `0edd08e6…`), le second écrit après les runs : le sceau
+affiché devient **postérieur** aux exécutions et ne les couvre plus, ce que les deux vérificateurs
+ont relevé immédiatement. Si le fichier doit changer, écrire dans un fichier daté distinct et
+consigner la chronologie ; sinon le dossier est réputé non ancré.
+
+Formulation qu'ils finissent par accorder quand l'ancrage manque : « déclaration de l'opérateur
+sur sa propre machine, non ancrée extérieurement ». Ne pas prétendre mieux.
+
 ## Le contrôle positif doit être DANS la boucle
 
 Des contre-épreuves jouées **avant** la campagne ne disent rien de la campagne : un détecteur
@@ -526,6 +619,17 @@ cherche la chaîne du canari n'importe où déclare le témoin bavard alors que 
 viennent que du semis local ; seuls le canal réseau et l'exécution comptent (piège 16). Un
 vérificateur qui commence par contredire est celui qui sert.
 
+## Paquets réels : trier avant de détoner
+
+Une liste de paquets « manqués par tel et tel détecteur » n'est pas un corpus de
+malveillants : elle est majoritairement faite de paquets **propres**, que les détecteurs ont eu
+raison de laisser passer. Détoner la liste entière produit des journaux vides et zéro règle.
+Trier d'abord sur le registre, sans rien exécuter : seuls `preinstall`/`install`/`postinstall`
+tournent chez celui qui installe — ni `prepare`, ni `prepublishOnly`, ni l'ancien `prepublish`.
+Puis lire les quelques candidats. La règle qui en sort porte sur la **chaîne** (un script
+d'installation qui atteint un `bin` lequel ouvre un shell), jamais sur le nom. Mesure, commandes
+de tri et tableau des scripts : `references/rappel-paquets-reels.md`.
+
 ## Ce qu'un « rien » veut dire
 
 Aucun canari sorti, aucun hôte hors registry, aucun `exec` inattendu, sous
@@ -554,9 +658,26 @@ autre suffixe, leurre confiné à sa sonde, canaris d'encodage jamais en clair, 
 `settle`+`pilote` présentes, durée d'observation). Recette, arborescence attendue et
 pièges de l'outil : `references/verification-lot.md`.
 
+**Ton propre script d'agrégation est un suspect avant le banc.** Prendre une ligne
+**réelle** du lecteur et reproduire le motif dessus avant de l'écrire : un `^s\d{3}\s`
+sur des tags de six caractères ne matche aucune ligne et rapporte « N contrôles positifs
+manquants » sur un banc vert, puis « 0 » après correction. Vérifier aussi l'orthographe
+exacte des noms de sondes dans cette ligne, jamais de mémoire. Campagne de N runs —
+critères binaires fixés d'avance, contrôle positif à chaque run, ancrage par run,
+unicité des canaris entre runs : même fichier, section « Campagne de N runs ».
+
 ## Mesure honnête
 
 Seul `BANC RECEVABLE` (code 0) se cite. Tout autre verdict : lire la colonne des raisons, ne pas transformer en chiffre.
+
+**Un total unique mélange trois natures et finit démoli.** Classer chaque sonde dans
+`attendus.json` — `DETECTION` (un canari sort par un canal réseau), `INTENTION` (la charge
+n'a pas pu s'exécuter, le binaire manque dans l'image) et `CONTROLE` (leurre, injection de
+faute) — puis publier le décompte **par classe**, jamais un seul nombre. Mesure réelle : un
+« 24 CLÉ par run » annoncé valait 19 canaris exfiltrés, 1 configuration client, 1 contact
+seul, 2 intentions et 1 contrôle. Le chiffre n'était pas faux par calcul, il était faux par
+mélange — et c'est ce mélange qui fait douter de tout le reste. Corollaire : une sonde dont
+le binaire est absent ne mesure rien, la répéter trente fois ne remplit pas la case.
 
 **Le code de sortie ne se lit jamais à travers un pipe.** `python3 cles.py b | tail -30` rend le code de `tail`, pas celui du lecteur : un run refusé s'affiche « rc=0 » et le verdict devient une formalité. Rediriger vers un fichier, puis lire le code : `python3 -I cles_scenario3.py b > /tmp/verdict.txt; echo rc=$?`.
 
@@ -568,7 +689,11 @@ publiée avec sa mesure (`scripts/publier.sh "titre" "avant → après"`), pour 
 l'historique dise ce qui a été corrigé **et ce que ça a changé**.
 
 Le jeton ne doit **jamais** être stocké dans ce dépôt : le remote reste une URL
-propre, et `publier.sh` emprunte le jeton du dépôt de travail au moment du push.
+propre, et `publier.sh` emprunte le jeton du dépôt de travail au moment du push. **Ni passer
+en argv** : `git push https://user:token@…` est lisible dans `ps` par tout processus de la
+machine. Extraire le jeton dans un fichier en 600 et pousser via `GIT_ASKPASS` (script
+`case "$1" in *[Uu]sername*) echo x-access-token;; *) cat /tmp/.pat;; esac`) — et si le jeton
+a déjà été posé en clair dans une URL de remote, le considérer comme fuité et le révoquer.
 Une URL `https://user:token@…` dans `.git/config` d'un dépôt public finit par
 être publiée ou copiée — c'est une fuite en attente.
 
