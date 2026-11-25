@@ -556,6 +556,25 @@ def resume(lignes: list) -> dict:
     }
 
 
+def charge_classes_fabrique():
+    """CLASSES_ATTENDUES de fabrique_sondes.py (source unique), lu à côté du lecteur
+    (surchargeable SBX_FABRIQUE). Charge le module SANS exécuter fabrique() (appelée
+    seulement sous __main__). Retourne (dict|None, chemin)."""
+    chemin = os.environ.get("SBX_FABRIQUE") or os.path.join(
+        os.path.dirname(os.path.abspath(__file__)), "fabrique_sondes.py")
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("sbx_fabrique_sondes", chemin)
+        m = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(m)
+        cl = m.CLASSES_ATTENDUES
+        if not isinstance(cl, dict):
+            return None, chemin
+        return dict(cl), chemin
+    except Exception:
+        return None, chemin
+
+
 def charge_code_attendu(chemin: str):
     """Manifeste attendu (dict) ; None s'il n'existe pas ou est illisible."""
     if not os.path.isfile(chemin):
@@ -604,8 +623,33 @@ def main():
     except OSError:
         hors = []
 
-    lignes = [classe(e, ch["runs"], classe_attendue(attendus.get(e["nom"])), code_attendu) for e in registre]
+    canon, chemin_fab = charge_classes_fabrique()
     ecarts = []
+    if canon is None:
+        print("fabrique_sondes.py introuvable : classes non vérifiées")
+
+    def attendu_canonique(nom):
+        """Classe canonique (fabrique) si elle est connue, sinon attendus.json tel quel."""
+        if canon is None:
+            return attendus.get(nom)
+        return canon.get(nom, "CLÉ")
+
+    if canon is not None:
+        vus = set()
+        for e in registre:
+            nom = e["nom"]
+            if nom in vus:
+                continue
+            vus.add(nom)
+            c = canon.get(nom, "CLÉ")
+            v = attendus.get(nom)
+            if v != c:
+                ligne = (f"ATTENDUS PÉRIMÉS : {nom} attendu.json={v if v is not None else 'absent'} "
+                         f"fabrique={c} → relancer : python3 -I {chemin_fab}")
+                print(ligne)
+                ecarts.append(ligne)
+
+    lignes = [classe(e, ch["runs"], classe_attendue(attendu_canonique(e["nom"])), code_attendu) for e in registre]
 
     valeurs = sorted({r["code_sha256"] for r in lignes if r["code_sha256"]})
     if len(valeurs) == 1:
@@ -627,7 +671,7 @@ def main():
             extra += " raisons=" + "; ".join(r["raisons"])
         affiche = etat + (" (intention)" if r["classe"] == CLASSE_INTENTION and etat == "CLÉ" else "")
         print(f"{r['tag']:8s} {r['nom'][:30]:30s} {affiche}{extra}")
-        att = attendus.get(r["nom"])
+        att = attendu_canonique(r["nom"])
         r["attendu"] = att
         recevable = etat in ("CLÉ", "—", "CONTRÔLE OK")
         # classe INTENTION : recevable si CLÉ ; CONTRÔLE-LEURRE : CONTRÔLE OK ; sinon l'attendu tel quel.

@@ -67,6 +67,19 @@ même passe. Exiger qu'il marque `# INCONNU:` **à l'endroit exact** où une inf
 plutôt que de la combler : une valeur inventée produit un patch plausible, faux, et déployé sans
 qu'on le voie.
 
+## Deux modèles en parallèle : même prompt, jugement croisé
+
+Pour un chantier de conception (et non de relecture), envoyer **le même prompt mot pour mot** à
+deux modèles, puis les faire juger **l'un l'autre à l'aveugle du nom**, avec une consigne qui
+demande des **erreurs factuelles** (commande fausse, chemin inexistant, API inventée, contrainte
+violée), les risques tus, et un verdict en un mot ; l'auteur révise ensuite, puis on reteste.
+Ce que ça a rapporté : un patch inventant un schéma (`detections[]`) absent du fichier visé, des
+verbes root supposés (`sbx-docker-ctl build/tag/image-size`) qu'aucune contrainte n'établit, un
+`--network=none` qui coupe le faux-Internet, une image enrichie qui offre l'installeur à la
+charge. **Aucune proposition de LLM ne s'applique sans avoir été exécutée** : la longueur d'une
+réponse n'est pas sa vérification (19 810 caractères contre 13 050, et c'est la plus courte qui
+relevait les chemins inventés).
+
 ## Les trois couches
 
 1. **disque** : snapshot avant/après sur des racines nommées ;
@@ -575,7 +588,26 @@ Si l'accès privilégié depuis l'intérieur a été fermé et qu'il reste du tr
 le déléguer à une **autre machine du réseau** qui se connecte à l'hôte par son shell natif
 puis entre dans le sous-système. Écrire la correction comme un fichier **livrable** :
 idempotent, validation de syntaxe **avant** installation, retrait automatique si elle
-échoue. Ce canal reste une porte d'entrée à traiter côté hôte — le noter comme dette.
+échec. Ce canal reste une porte d'entrée à traiter côté hôte — le noter comme dette.
+
+**La porte à commande forcée est aussi le seul chemin d'écriture root, et elle s'utilise
+comme un canal.** Mesuré : `ssh <compte>@<hôte>` depuis une autre machine du réseau
+n'exécute pas la commande demandée (`SSH_ORIGINAL_COMMAND` ignoré) mais lance le script
+de porte **en root** dans le sous-système — `id -u` rend 0. Pour poser des fichiers
+root-owned (harnais, shims) alors qu'on n'a ni sudo ni docker :
+
+1. écrire un installateur idempotent côté utilisateur — `install -m 0644 -o root -g root`
+   pour les `.js`, `0755` pour les exécutables, et `cp -a` de **sauvegarde datée** de la
+   cible avant de la toucher ;
+2. sauvegarder le script de porte, insérer l'appel dans la branche que l'invocation par
+   défaut déclenche (`status`), **`bash -n`** avant de déclencher ;
+3. déclencher depuis l'autre machine et lire `uid=0` plus la liste des fichiers installés ;
+4. **restaurer la porte à l'identique** et le prouver : `grep -c <marqueur>` doit rendre 0.
+
+Acceptable pour poser le code qui va **mesurer**, jamais pour fabriquer une preuve : la porte
+appartient à l'opérateur, donc ce qu'elle écrit reste circulaire pour un vérificateur. Le
+dire à part, sans le confondre avec l'ancrage.
+
 Helper complet et matrice de tests : `references/durcissement-droits.md`.
 
 **Un run qui expire ne se cite pas.** Un dépassement de délai (`rc=124`, `137`, ou une
@@ -630,6 +662,83 @@ Puis lire les quelques candidats. La règle qui en sort porte sur la **chaîne**
 d'installation qui atteint un `bin` lequel ouvre un shell), jamais sur le nom. Mesure, commandes
 de tri et tableau des scripts : `references/rappel-paquets-reels.md`.
 
+**Ne jamais généraliser sur la liste depuis un échantillon.** Quatre paquets détonés sur 203, dont
+deux `INCONCLUANT`, ne disent rien des 199 autres — dont la plupart n'ont même pas exécuté leur
+`main`. Écrire « 4 mesurés : 0 geste observé », jamais « les 203 sont propres ». Et un vrai paquet
+se détoné par le **scénario** (dépendances préparées d'abord, puis scripts de cycle rejoués dans
+le conteneur), pas par le détoneur brut sur le tarball.
+
+### Détoner UN tarball arbitraire
+
+Inutile de construire un second chemin : le détoneur prend un tarball, pas une liste.
+
+```bash
+sudo -n /bin/bash /opt/sandbox/detoner-obs.sh <paquet.tgz> <slug> 45 <nonce_hex_32> 0 0 15000 20
+```
+
+Arguments : tarball, slug, timeout, nonce (**≥ 16 caractères, sinon `exit 4`**), offset de
+jours, `installe_ms`, fenêtre d'observation, parallélisme par entrée. Le verrou root est
+**global** : un banc en cours fait échouer l'appel en `rc=75`, donc attendre la fin réelle du
+scénario (`pgrep -f sbx-scenario3.sh`) et non un délai fixe. Sortie dans
+`/opt/sandbox/runs-obs/<slug>/` : `run/events.jsonl`, `duree_ms`, `trace.raw`.
+
+Sans canaris, aucun `CLÉ` n'est attendu : on cherche des **gestes** (canaux du harnais,
+`child_process.spawn`, écritures hors du paquet), jamais une exfiltration.
+
+### Un script de cycle de vie qui échoue n'est pas un paquet propre
+
+Lire le **code de sortie** de chaque script de cycle avant de conclure quoi que ce soit :
+`code=127` ou `code=1` signifient que le geste n'a **jamais été atteint**. Verdict
+`INCONCLUANT`, jamais « rien vu ». Deux causes à distinguer avant d'accuser le banc : un binaire
+absent de l'image, ou des **dépendances absentes** — un tarball détoné brut sort
+`postinstall-build: not found` puis `Cannot find module '<dep>'`, ce qui n'est pas une image
+pauvre mais un paquet dont l'arbre de dépendances n'a pas été préparé avant la détonation.
+
+Ne pas « corriger » en installant npm/yarn/git/curl dans l'image : cela offre à la charge
+observée l'outil pour s'installer elle-même, exige un miroir registre et du réseau root ; et
+`--network=none` (la tentation symétrique) coupe le **faux-Internet** qui porte la preuve. La
+voie est celle des **shims** dans le harnais : `npm`/`npx`/`yarn`/`pnpm` répondent
+`--version`/`config`/`run` et **refusent toute installation** (`rc=1`, zéro disque, zéro
+réseau) ; `curl`/`git`/`bash` sont de vrais binaires s'ils existent, sinon émulés — un client
+HTTP émulé traverse le DNS/TLS du faux-Internet, donc l'envoi d'un historique devient observable.
+Les variables npm (`npm_execpath`, `npm_config_*`) se posent **par entrée** : figer
+`npm_lifecycle_event`/`npm_lifecycle_script` rend l'environnement faux pour les paquets qui les
+relisent.
+
+### Deux lectures fausses à ne pas refaire sur ces journaux
+
+- `canal=eval` : ne jamais conclure « code dynamique du paquet » sur un pic. Deux origines
+  mesurées, toutes deux innocentes ici : le harnais qui instrumente ses propres méthodes
+  (`appendFile`) et un **outil présent dans l'image** (`/opt/yarn-v1.22.22/lib/cli.js`, sa
+  promisification interne). Chercher le chemin appelant dans l'événement avant toute conclusion,
+  et ne pas en déduire « l'image est pauvre » sans avoir listé l'image.
+- Un harnais qui exécute **tous** les scripts de cycle déclarés lance aussi `prepublishOnly`,
+  que npm ne déclenche **jamais** à l'installation : un `127` sur ce script ne dit rien du
+  paquet. Marquer chaque script d'une `phase` (`installation` / `hors_installation`) dans le
+  `summary` et ne conclure que sur la première.
+- `child_process.spawn` **est** capturé, avec la ligne de commande complète. Le trou du `sh -c`
+  porte sur ce que fait l'enfant **à l'intérieur** de son shell, pas sur le fait qu'il soit
+  lancé : ne pas annoncer « spawn invisible ».
+
+## Le code publié et le code exécuté divergent en silence
+
+Un dépôt qui recopie les scripts depuis l'arbre de travail peut garder une version antérieure :
+une campagne entière a été mesurée avec un lecteur corrigé localement, tandis que le dépôt
+publiait encore l'ancien. Avant d'annoncer « poussé », comparer les empreintes deux à deux
+(`sha256sum`), pas la date du commit. Et après avoir réparé un lecteur, **rejouer la campagne
+archivée avec le lecteur réparé** avant de citer l'ancien verdict : celle qui sortait
+« recevable » 29 fois est sortie `BANC NON RECEVABLE` à chaque run.
+
+**Dès que le harnais déclare l'identité du code, tout run produit par un autre code devient
+illisible — et c'est le comportement correct.** Après installation d'un harnais neuf, relire
+un run ancien rend `Détections 0/21`, témoin `KO`, `BANC NON RECEVABLE` : les empreintes ne
+correspondent plus. Ne pas « réparer » en régénérant le manifeste contre les anciens runs —
+ce serait réétiqueter après coup ; ne compter que les runs **postérieurs** à l'installation.
+Détail d'outillage : le générateur prend le **répertoire** du harnais en argument et écrit sur
+la sortie standard, donc `python3 -I manifeste_code.py /opt/sandbox/harnais > code-attendu.json`
+— sans la redirection le fichier n'existe pas et le lecteur affiche toujours
+`code-attendu.json absent`.
+
 ## Ce qu'un « rien » veut dire
 
 Aucun canari sorti, aucun hôte hors registry, aucun `exec` inattendu, sous
@@ -669,6 +778,15 @@ unicité des canaris entre runs : même fichier, section « Campagne de N runs �
 ## Mesure honnête
 
 Seul `BANC RECEVABLE` (code 0) se cite. Tout autre verdict : lire la colonne des raisons, ne pas transformer en chiffre.
+
+**Un `attendus.json` périmé ne se signale pas tout seul — il se contredit.** Quand la classe d'une
+sonde change dans la fabrique (un leurre requalifié `CONTRÔLE`) sans que le fichier d'attendus soit
+régénéré, le lecteur accepte l'ancien en silence et compte un contrôle comme une détection : verdict
+`NON RECEVABLE` sans cause visible, et `intentions 0/0` en contradiction avec la ligne `Nature`.
+Charger les classes **depuis la fabrique** et refuser avec `ATTENDUS PÉRIMÉS … relancer
+fabrique_sondes.py` + `rc=1` dès que les deux diffèrent. Corollaire : requalifier une sonde après
+avoir vu son résultat est une **reclassification**, pas une mesure — seul un run neuf, avec les
+attendus corrigés d'avance, se cite.
 
 **Un total unique mélange trois natures et finit démoli.** Classer chaque sonde dans
 `attendus.json` — `DETECTION` (un canari sort par un canal réseau), `INTENTION` (la charge
