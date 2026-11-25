@@ -276,6 +276,26 @@ une sonde censée tester `require.main` frappait en réalité par la fonction ex
 l'hôte sink suffit pour une `CLÉ`**, donc le matcher de canaris n'est jamais
 sollicité — une sonde qui n'émet aucun canari ne teste pas le matcher.
 
+### Aucune sonde ne dépend du mécanisme ⇒ le banc est aveugle à sa panne
+
+Un banc peut afficher le même score avec une étape **cassée** que sans elle, si
+aucune sonde n'a besoin de cette étape pour frapper. Mesure réelle : vingt-quatre
+sondes à 23 `CLÉ` + témoin muet, alors que l'étape qui pilote les exports n'était
+jamais atteinte — les `CLÉ` venaient toutes d'un autre canal (postinstall,
+chargement). Le score était juste, la question n'était pas posée.
+
+Règles :
+
+- pour **chaque** mécanisme du harnais (postinstall, `main` exécuté, exports pilotés,
+  horloge, dépendances), exiger **au moins une sonde dont la charge ne part que si
+  ce mécanisme agit** — sinon sa panne est invisible dans le total ;
+- prouver la sonde dans les deux sens : elle frappe avec le nouveau harnais et reste
+  muette avec l'ancien (rejouer les deux, mesurer la fenêtre d'observation et le
+  nombre de requêtes, pas seulement le verdict) ;
+- ne pas en conclure que les runs antérieurs étaient **faux** : ils mesuraient autre
+  chose. Écrire « muets sur cette question », pas « caducs » — une sur-correction
+  détruit la valeur de mesures qui, elles, tenaient.
+
 ## Le banc de sondes (scripts/fabrique_sondes.py)
 Dix-neuf classes malveillantes + un témoin : postinstall, ESM, timer 3 jours, bin
 seul, jeton npm, config C2, `exports` sans `main`, payload `eval`, shell+curl,
@@ -384,6 +404,15 @@ Trois refus motivés valent mieux que vingt détections. Les mesurer avant de ci
 ## Le témoin muet est le critère, pas le témoin détecté
 
 Des vérificateurs LLM (Mistral, hy4) ont exigé « `p12-propre` = CLÉ » comme critère de passage. **Ce critère valide un banc contaminé.** Le témoin doit sortir `—`. Un dossier de run périmé, ou les canaris d'une sonde précédente, produisent un `CLÉ` parfaitement crédible : l'exiger revient à exiger la contamination.
+
+## Vérifier un lot hors du lecteur
+
+Le verdict du lecteur ne suffit pas : un lot de runs se contrôle **indépendamment**
+(nonces sur toutes les lignes, `fin.json`/`entrees.jsonl`/`summary.json` au bon nonce,
+zéro événement étranger, garde et redémarrage `OK`, `npm_rc = 0`, aucun canari d'un
+autre suffixe, leurre confiné à sa sonde, canaris d'encodage jamais en clair, étapes
+`settle`+`pilote` présentes, durée d'observation). Recette, arborescence attendue et
+pièges de l'outil : `references/verification-lot.md`.
 
 ## Mesure honnête
 

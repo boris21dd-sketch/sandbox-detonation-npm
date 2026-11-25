@@ -219,9 +219,12 @@ PY
   fi
   registre OK "$REDEM"
 
-  R=$(sudo -n env SBX_NONCE="$NONCE" SBX_OBSERVER_MS=15000 SBX_PAR_ENTREE=$TMO \
-        SBX_OFFSET_JOURS="${SBX_OFFSET_JOURS:-0}" SBX_INSTALLE_MS="${SBX_INSTALLE_MS:-0}" \
-        bash /opt/sandbox/detoner-obs.sh "$T" "$tag" "$TMO" 2>&1 | tail -1)
+  # La regle sudoers n autorise QUE cette commande exacte, en SETENV sur ces
+  # variables precises. `sudo env` n est plus permis : il equivaut a un root total.
+  R=$(SBX_NONCE="$NONCE" SBX_OBSERVER_MS=15000 SBX_PAR_ENTREE=$TMO \
+       SBX_OFFSET_JOURS="${SBX_OFFSET_JOURS:-0}" SBX_INSTALLE_MS="${SBX_INSTALLE_MS:-0}" \
+       sudo -n --preserve-env=SBX_NONCE,SBX_OBSERVER_MS,SBX_PAR_ENTREE,SBX_OFFSET_JOURS,SBX_INSTALLE_MS \
+        /bin/bash /opt/sandbox/detoner-obs.sh "$T" "$tag" "$TMO" 2>&1 | tail -1)
 
   # CONTROLE APRES (Mistral) : deux echecs tres differents.
   #  - rien n a ete ecrit -> banc invalide, on rejoue.
