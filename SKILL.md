@@ -25,10 +25,27 @@ l'avis de la précédente et doit dire ce qu'elle **retire** et ce qu'elle **mai
 C'est là que les erreurs tombent — un vérificateur a retiré sa propre explication de
 cause après la critique de l'autre, et son critère de stabilité avec. Un avis de
 vérificateur **localise**, il ne prouve pas : le banc tranche, et quand les deux se
-contredisent, chercher la trace dans les fichiers plutôt qu'arbitrer entre deux textes.
-Ne jamais déclarer « stable » sur quelques runs : trois runs verts ne prouvent rien
-(pour réfuter un défaut à 10 % à 95 %, il faut ~29 runs). Écrire une **injection de
-faute déterministe** — elle tranche en un seul run.
+quand les deux se contredisent, chercher la trace dans les fichiers plutôt qu'arbitrer entre deux textes.
+
+**Un vérificateur peut se tromper sur tes propres pièces, et il faut le lui montrer par la
+mesure, pas par l'obéissance.** Une objection qui repose sur une hypothèse fausse quant à
+l'artefact — « tes canaris sont des littéraux, donc un filtre de chaînes connues passerait » —
+se tranche en extrayant les valeurs réelles de plusieurs runs : si elles diffèrent toutes, les
+canaris sont tirés par run et l'objection tombe. Concéder un défaut inexistant coûte autant
+qu'en nier un vrai : on corrige le banc pour rien, et on perd la trace de ce qui marchait.
+Chercher la part juste de l'objection (ici l'entropie réelle, 24 bits et non 128) et l'écrire
+comme limite assumée, au lieu de la refuser en bloc.
+Ne jamais déclarer « stable » sur quelques runs : trois runs verts ne prouvent rien.
+Écrire l'arithmétique, sans l'arrondir en « presque sûr » : un défaut par run à taux `p`
+survit à `N` runs avec la probabilité `(1-p)^N`. À 10 % : 3 runs laissent **72,9 %** de
+chance de le manquer, 29 runs laissent 4,71 %, soit une borne basse unilatérale de
+**90,19 %** à α = 0,05 et **80,71 %** après correction sur 25 sondes. À 1 %, il faut
+**299** runs. Le piège classique est d'apparier la mauvaise probabilité au bon nombre
+de runs : `0,99³ = 97 %` décrit un défaut à **1 %**, pas à 10 % — annoncer « 97 % en
+3 runs » pour un défaut à 10 % est faux d'un facteur d'échelle et se fait démolir en
+une passe. Écrire aussi ce que le nombre de runs ne prouvera jamais : la couverture
+d'une sonde qui ne teste rien reste vide, répétée trente fois.
+Écrire une **injection de faute déterministe** — elle tranche en un seul run.
 
 ## Les trois couches
 
@@ -365,6 +382,113 @@ La cartographie des dépôts qui font la même chose, ce qu'ils font mieux, ce q
 ne faut PAS copier, et la recette pour les lire sans brûler le quota GitHub :
 `references/concurrents.md`.
 
+## Sceller sans se mentir, et savoir s'arrêter
+
+Un sceau **tronqué** n'est pas un sceau : publier 64 hex complets, jamais un préfixe présenté
+comme un `sha256` (une empreinte de 25 caractères n'est même pas un préfixe d'octets valide).
+Énoncer la règle d'exclusion avec la commande qui la vérifie — `sed '/^SCEAU=/d' fichier |
+sha256sum` doit rendre la valeur annoncée — sinon le champ n'est authentifié par rien. Sceller
+**tout ce qui s'exécute** : fabrique (c'est elle qui tire les canaris), orchestrateur, lecteur,
+harnais, image, helper.
+
+Un vérificateur sans accès à la machine finit toujours par exiger un ancrage externe signé
+(horodatage tiers). C'est un regrès infini : chaque sceau peut être re-scellé. Poser la racine
+de confiance explicitement — la machine de l'opérateur, le sceau protégeant de la **dérive** et
+non d'un opérateur malveillant — puis arrêter la boucle, au lieu d'empiler des passes qui ne
+concluront jamais.
+
+## Le contrôle positif doit être DANS la boucle
+
+Des contre-épreuves jouées **avant** la campagne ne disent rien de la campagne : un détecteur
+qui meurt au troisième run passe 29/29 « recevable ». Exiger à **chaque** run des sondes qui
+frappent par construction, couvrant les trois canaux (io/réseau, matcher seul, registry seul),
+avec canaris non vides et nonce du registre — sans quoi vingt-neuf « recevables » ne mesurent
+que la régularité du silence. Corollaire sur les canaris : ils doivent être tirés par run et
+inscrits au registre avant détonation ; six hex (24 bits) suffisent à ne pas collisionner mais
+s'annoncent comme tels, jamais comme 128 bits.
+
+## Ne jamais lire le lecteur pendant que le banc tourne
+
+Un run en cours affiche `BANC INVALIDE (entrees.jsonl absent ou vide)` sur la sonde en vol,
+puis la rejoue et la réussit. Lu trop tôt, cela ressemble à une régression. Attendre la
+ligne `FINI` du scénario, ou la sortie du processus, avant tout verdict.
+
+## La frontière est le conteneur, pas les droits de l'hôte
+
+Le paquet détoné est isolé : `priv=false`, réseau dédié, aucun montage de `/`, pas de
+socket docker. Une sonde qui lit `~/.ssh` ou écrit un hook `~/.claude` frappe **dans** le
+conteneur, sur des canaris factices. Il n'existe qu'**une** ligne où un paquet touche
+l'hôte, et c'est `npm install` (voir la section RCE) : la vérifier avant tout le reste.
+
+Conséquence de méthode, à appliquer quand la tentation de durcir arrive :
+
+- énumérer les lignes du scénario qui s'exécutent **hors** du conteneur (installation,
+  copie du tarball, orchestration) ; elles seules portent un risque paquet→hôte ;
+- l'hygiène de la machine (groupes, élévation, clés, mots de passe) ne rend pas la mesure
+  plus juste et ne change aucun chiffre : la traiter à part, brièvement, jamais à la place
+  du travail de mesure ;
+- le vrai défaut restant d'un banc recevable est presque toujours un **trou
+  d'instrumentation** (un enfant `sh -c` à environnement vidé échappe au journal), pas une
+  priorité d'escalade. Une répétition de plus ne le révèle pas : seule une sonde dédiée le
+  fait.
+
+Un après-midi passé à fermer des chemins d'élévation alors que les sondes sont
+conteneurisées est du travail perdu, et l'utilisateur le dit avant qu'on s'en aperçoive :
+« en sandbox ils sont isolés de tout ça ». Quand il le dit, il a raison — revenir à la
+mesure immédiatement.
+
+## Durcir les droits : la règle, le helper, et les chemins qu'on oublie
+
+`SETENV` dans une règle d'élévation ne limite rien : `sudo -n BASH_ENV=/tmp/evil.sh
+/bin/bash <script autorisé>` exécute du code en root — constaté par exécution, uid 0 écrit
+dans /tmp. Les paramètres se passent donc en **arguments** du script privilégié, jamais par
+l'environnement, et la règle n'a ni `SETENV` ni `env`. Une validation de syntaxe qui répond
+« parsed OK » ne dit rien sur ce que la règle autorise ; seul un essai d'injection le dit.
+
+Quatre règles, dans cet ordre :
+
+1. **Pas de joker en fin de règle.** Un joker laisse passer n'importe quel argument, y
+compris des options de l'outil sous-jacent et un nom de cible arbitraire. Quand l'appelant
+n'a pas besoin de paramétrer, écrire la règle sans joker.
+2. **Un helper à verbes figés, pas un passe-plat.** Chaque verbe est une branche figée,
+sans variable non validée ; aucun nom de cible ni option ne vient de l'appelant. Un helper
+qui relaie les arguments jusqu'à l'outil rend la règle équivalente à l'accès complet.
+3. **Énumérer tous les chemins, pas seulement celui qu'on a écrit.** Deux autres subsistent
+après avoir nettoyé la règle : l'appartenance au groupe de l'outil (accès total sans mot de
+passe) et l'appartenance au groupe d'administration (accès avec le mot de passe de
+l'utilisateur — `passwd -S <user>` répond `P` quand ce chemin est actif). Retirer
+l'appartenance, puis revérifier.
+4. **La contre-épreuve s'exécute avec l'identité à laquelle la règle s'applique.** Un test
+lancé depuis un compte plus puissant ne teste rien, puisque ce compte n'y est pas soumis ;
+il faut passer par `su - <user> -c '…'` et lire le code de retour. Corollaire pour les
+groupes : un retrait ne vaut que pour les sessions **ouvertes ensuite** — un shell déjà
+lancé garde l'appartenance en mémoire. Vérifier sur la base (`id -nG <user>`), puis dans une
+session neuve ; lire les groupes de son propre shell répond sur l'état d'avant.
+
+5. **Le chemin extérieur survit à tout ce qu'on ferme à l'intérieur.** Sur un hôte
+   conteneurisé qui tourne derrière un service d'accès Windows, une commande entrant dans
+   le sous-système avec l'identité système donne les pleins droits depuis un shell de
+   l'hôte, quel que soit l'état de l'élévation et des groupes à l'intérieur. Vérifier la
+   liste des comptes autorisés par ce service et, pour chacun, **quel fichier de clés il
+   lit réellement** : pour un compte d'administration, le service en ignore un et lit le
+   fichier global, qui reste souvent sans restriction. Fermer la clé du compte ordinaire
+   pendant que celle du compte d'administration reste ouverte ne change rien — et
+   l'annoncer comme un progrès est exactement le défaut qu'on vient de corriger.
+
+La matrice qui vaut preuve : code 2 sur un verbe inconnu, code 1 sur une élévation refusée,
+code 0 sur le verbe légitime — et non la relecture du fichier de configuration.
+
+Si l'accès privilégié depuis l'intérieur a été fermé et qu'il reste du travail à faire,
+le déléguer à une **autre machine du réseau** qui se connecte à l'hôte par son shell natif
+puis entre dans le sous-système. Écrire la correction comme un fichier **livrable** :
+idempotent, validation de syntaxe **avant** installation, retrait automatique si elle
+échoue. Ce canal reste une porte d'entrée à traiter côté hôte — le noter comme dette.
+Helper complet et matrice de tests : `references/durcissement-droits.md`.
+
+**Un run qui expire ne se cite pas.** Un dépassement de délai (`rc=124`, `137`, ou une
+durée d'observation au-delà du budget) donne un état partiel : la sonde n'a pas fini de
+frapper. Le lecteur doit rendre `CLÉ NON RECEVABLE raisons=run interrompu`, jamais `CLÉ`.
+
 ## Passation à un tiers
 
 Quand la correction est confiée à quelqu'un qui n'a pas vécu la session (Claude, un
@@ -385,6 +509,22 @@ Un test de sécurité qui ne discrimine plus (contre-épreuve impossible à repr
 la version d'outil installée) s'écrit `INCONCLUANT`, **jamais `OK`** — et on ne fige
 jamais une vieille version de l'outil pour le faire passer : c'est rouvrir la faille
 pour sauver le test.
+
+**Ne jamais soumettre un dossier assemblé en deux temps.** Recueillir un premier lot de
+faits, constater qu'il est inexploitable, puis compléter le même fichier laisse cohabiter
+l'ancien état (empreintes illisibles, commande qui a échoué) et le nouveau. Les deux
+vérificateurs refusent alors **tout** le dossier au titre de la provenance — et ils ont
+raison, la pièce jointe contredit le texte. Après chaque passe de collecte, réécrire le
+dossier **en entier** depuis les faits frais, et marquer ce qui n'a pas pu être lu plutôt
+que le combler.
+
+**Recompter sur une autre machine, avec les seuls fichiers de preuve.** Copier l'archive
+des runs, les registres bruts, le lecteur **et `sondes/attendus.json`** : sans ce dernier,
+le lecteur rend `BANC NON RECEVABLE` sur chaque run, il refuse de conclure sans attendus.
+Faire tourner le **vrai lecteur** là-bas, pas un script improvisé — un contrôle maison qui
+cherche la chaîne du canari n'importe où déclare le témoin bavard alors que ses canaris ne
+viennent que du semis local ; seuls le canal réseau et l'exécution comptent (piège 16). Un
+vérificateur qui commence par contredire est celui qui sert.
 
 ## Ce qu'un « rien » veut dire
 

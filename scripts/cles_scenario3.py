@@ -331,7 +331,15 @@ def classe(e: dict, runs: str) -> dict:
     r["ecritures_hors"] = toutes_hors[:8]
     config_client = [c for c in toutes_hors if any(k in c for k in (".claude", ".codex", ".cursor", ".gemini", ".mcp"))]
     cle = bool(r["canaris_reseau"] or r["canaris_exec"] or r["hotes"] or r["execs"] or config_client)
-    if cle:
+    # Un run qui expire n'est pas citable : le cron du 25/11 a releve n024 en rc=124
+    # (140 s de timeout) compte comme CLÉ. Une detection sur un run interrompu ne
+    # prouve pas que la sonde a fini de frapper.
+    interrompu = str(npm_rc) in ("124", "137") or (
+        str(e.get("duree_ms", "")).isdigit() and int(e["duree_ms"]) > 120000)
+    if cle and interrompu:
+        r["etat"] = "CLÉ NON RECEVABLE"
+        r["raisons"].append(f"run interrompu (rc={npm_rc}, duree_ms={e.get('duree_ms')})")
+    elif cle:
         if r["nonce_evenement"] == "present" and e["redemarrage"] == "OK":
             r["etat"] = "CLÉ"
         else:

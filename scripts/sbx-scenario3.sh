@@ -188,24 +188,24 @@ PY
   # piege 21), puis on verifie qu'aucun `node` ne tourne.
   REDEM=DESACTIVE
   if [ "$REDEMARRER" = 1 ]; then
-    if docker restart -t 2 sbx-detonation >/dev/null 2>&1; then REDEM=OK; else REDEM=ECHEC; fi
+    if sudo -n /usr/local/sbin/sbx-docker-ctl restart >/dev/null 2>&1; then REDEM=OK; else REDEM=ECHEC; fi
     for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15; do
-      docker exec sbx-detonation true >/dev/null 2>&1 && break; sleep 1
+      sudo -n /usr/local/sbin/sbx-docker-ctl pret >/dev/null 2>&1 && break; sleep 1
     done
   fi
-  docker inspect -f '{{.State.Running}}' sbx-detonation 2>/dev/null | grep -q true \
+  sudo -n /usr/local/sbin/sbx-docker-ctl vivant 2>/dev/null | grep -qx true \
     || echo "detonation=ARRETE" >> "$ETAT"
-  docker inspect -f '{{.State.Running}}' sbx-fauxinternet 2>/dev/null | grep -q true \
+  sudo -n /usr/local/sbin/sbx-docker-ctl vivant 2>/dev/null | grep -qx true \
     || echo "fauxinternet=ARRETE" >> "$ETAT"
-  docker exec sbx-fauxinternet sh -c 'test -w /data/logs' 2>/dev/null \
+  sudo -n /usr/local/sbin/sbx-docker-ctl logs 2>/dev/null \
     || echo "journal_reseau=NON_INSCRIPTIBLE" >> "$ETAT"
-  docker exec "$(docker ps -qf name=sbx-detonation)" sh -c 'mkdir -p /work/out/run && test -w /work/out/run' 2>/dev/null \
+  sudo -n /usr/local/sbin/sbx-docker-ctl dossier 2>/dev/null \
     || echo "sortie=NON_INSCRIPTIBLE" >> "$ETAT"
   # Processus `node` vivants juste apres le redemarrage. Le PID 1 du conteneur peut
   # lui-meme etre un `node` (inconnu d'ici) : on compare donc a la LIGNE DE BASE prise
   # au premier redemarrage du run, au lieu d'exiger zero (sinon 100 % INVALIDE).
   if [ "$REDEMARRER" = 1 ] && [ "$REDEM" = OK ]; then
-    NB_NODE=$(docker top sbx-detonation -eo pid,args 2>/dev/null \
+    NB_NODE=$(sudo -n /usr/local/sbin/sbx-docker-ctl top 2>/dev/null \
        | awk 'NR>1 { c=$2; sub(".*/","",c); if (c=="node") n++ } END { print n+0 }')
     if [ -z "${BASE_NODE:-}" ]; then BASE_NODE=$NB_NODE; fi
     if [ "$NB_NODE" -gt "$BASE_NODE" ]; then
@@ -221,10 +221,11 @@ PY
 
   # La regle sudoers n autorise QUE cette commande exacte, en SETENV sur ces
   # variables precises. `sudo env` n est plus permis : il equivaut a un root total.
-  R=$(SBX_NONCE="$NONCE" SBX_OBSERVER_MS=15000 SBX_PAR_ENTREE=$TMO \
-       SBX_OFFSET_JOURS="${SBX_OFFSET_JOURS:-0}" SBX_INSTALLE_MS="${SBX_INSTALLE_MS:-0}" \
-       sudo -n --preserve-env=SBX_NONCE,SBX_OBSERVER_MS,SBX_PAR_ENTREE,SBX_OFFSET_JOURS,SBX_INSTALLE_MS \
-        /bin/bash /opt/sandbox/detoner-obs.sh "$T" "$tag" "$TMO" 2>&1 | tail -1)
+  # SETENV interdit (BASH_ENV -> root, exploite). Tous les parametres passent en
+  # ARGUMENTS : tarball, slug, timeout, nonce, offset_jours, installe_ms,
+  # observer_ms, par_entree.
+  R=$(sudo -n /bin/bash /opt/sandbox/detoner-obs.sh "$T" "$tag" "$TMO" "$NONCE" \
+        "${SBX_OFFSET_JOURS:-0}" "${SBX_INSTALLE_MS:-0}" 15000 "$TMO" 2>&1 | tail -1)
 
   # CONTROLE APRES (Mistral) : deux echecs tres differents.
   #  - rien n a ete ecrit -> banc invalide, on rejoue.
